@@ -38,6 +38,39 @@ impl FileEntry {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileFocus {
+    Parent,
+    Current,
+    Preview,
+}
+
+impl FileFocus {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Parent => Self::Current,
+            Self::Current => Self::Preview,
+            Self::Preview => Self::Parent,
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Parent => Self::Preview,
+            Self::Current => Self::Parent,
+            Self::Preview => Self::Current,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PreviewPane {
+    pub title: String,
+    pub lines: Vec<String>,
+    pub binary: bool,
+    pub error: Option<String>,
+    pub scroll: usize,
+}
 #[derive(Debug, Clone)]
 pub struct FileBrowser {
     pub cwd: PathBuf,
@@ -45,6 +78,10 @@ pub struct FileBrowser {
     pub selected: usize,
     pub error: Option<String>,
     pub show_hidden: bool,
+    pub parent_entries: Vec<FileEntry>,
+    pub parent_selected: usize,
+    pub focus: FileFocus,
+    pub preview: PreviewPane,
 }
 
 impl Default for FileBrowser {
@@ -61,6 +98,10 @@ impl FileBrowser {
             selected: 0,
             error: None,
             show_hidden: false,
+            parent_entries: Vec::new(),
+            parent_selected: 0,
+            focus: FileFocus::Current,
+            preview: PreviewPane::default(),
         };
         browser.refresh();
         browser
@@ -78,6 +119,99 @@ impl FileBrowser {
                 self.error = Some(err);
             }
         }
+        self.load_parent();
+        self.refresh_preview();
+    }
+
+    fn load_parent(&mut self) {
+        let parent = self.cwd.parent().unwrap_or(&self.cwd);
+        self.parent_entries = load_dir(parent, self.show_hidden).unwrap_or_default();
+        self.parent_selected = self
+            .parent_entries
+            .iter()
+            .position(|entry| entry.path == self.cwd)
+            .unwrap_or(0);
+    }
+
+    pub fn refresh_preview(&mut self) {
+        let mut pane = PreviewPane::default();
+        let Some(entry) = self.selected().cloned() else {
+            pane.lines.push("没有选中文件。".into());
+            self.preview = pane;
+            return;
+        };
+        pane.title = entry.name.clone();
+        if entry.is_dir {
+            let children = load_dir(&entry.path, self.show_hidden).unwrap_or_default();
+            pane.lines.push(format!("目录 · {} 项", children.len()));
+            pane.lines.push(String::new());
+            for child in children.iter().take(80) {
+                pane.lines.push(format!(
+                    "{} {}",
+                    if child.is_dir { "▸" } else { "·" },
+                    child.name
+                ));
+            }
+            if children.len() > 80 {
+                pane.lines.push("…".into());
+            }
+        } else {
+            match preview(&entry.path) {
+                Ok((lines, binary)) => {
+                    pane.lines = lines;
+                    pane.binary = binary;
+                }
+                Err(err) => pane.error = Some(err),
+            }
+        }
+        self.preview = pane;
+    }
+
+    pub fn move_current(&mut self, delta: isize) {
+        if self.entries.is_empty() {
+            return;
+        }
+        let len = self.entries.len() as isize;
+        self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
+        self.refresh_preview();
+    }
+
+    pub fn move_parent(&mut self, delta: isize) {
+        if self.parent_entries.is_empty() {
+            return;
+        }
+        let len = self.parent_entries.len() as isize;
+        self.parent_selected = (self.parent_selected as isize + delta).rem_euclid(len) as usize;
+    }
+
+    pub fn set_parent_selection(&mut self, index: usize) {
+        if index < self.parent_entries.len() {
+            self.parent_selected = index;
+        }
+    }
+
+    pub fn set_current_selection(&mut self, index: usize) {
+        if index < self.entries.len() {
+            self.selected = index;
+            self.refresh_preview();
+        }
+    }
+
+    pub fn enter_parent(&mut self) {
+        let Some(entry) = self.parent_entries.get(self.parent_selected).cloned() else {
+            return;
+        };
+        if entry.is_dir {
+            self.navigate(&entry.path);
+        }
+    }
+
+    pub fn focus_next(&mut self) {
+        self.focus = self.focus.next();
+    }
+
+    pub fn focus_previous(&mut self) {
+        self.focus = self.focus.previous();
     }
 
     pub fn selected(&self) -> Option<&FileEntry> {
@@ -94,6 +228,7 @@ impl FileBrowser {
             self.cwd = fs::canonicalize(&target).unwrap_or(target);
             self.selected = 0;
             self.refresh();
+            self.focus = FileFocus::Current;
         } else {
             self.error = Some(format!("不是目录：{}", target.display()));
         }
@@ -104,6 +239,7 @@ impl FileBrowser {
             self.cwd = parent.to_path_buf();
             self.selected = 0;
             self.refresh();
+            self.focus = FileFocus::Current;
         }
     }
 
@@ -144,14 +280,6 @@ impl FileBrowser {
         fs::rename(&entry.path, &target).map_err(|e| format!("重命名失败：{e}"))?;
         self.refresh();
         Ok(target)
-    }
-
-    pub fn move_selected(&mut self, delta: isize) {
-        if self.entries.is_empty() {
-            return;
-        }
-        let len = self.entries.len() as isize;
-        self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
     }
 }
 

@@ -1,6 +1,6 @@
 //! Application state and the keyboard-driven interaction model.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -9,11 +9,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use tui_textarea::TextArea;
 
+use crate::appstore::StoreState;
 use crate::cert::{self, CertInfo};
+use crate::cleaner::CleanerState;
 use crate::cli::Cli;
 use crate::config::{self, LogKind, LogSource, NginxConfig};
 use crate::docker::{DockerSnapshot, DockerView};
@@ -24,6 +27,35 @@ use crate::service::{self, Action, CommandResult, Manager, ProcessInfo};
 use crate::sites::{self, NewSiteSpec, Site, SiteInventory, SiteKind};
 use crate::system::SystemState;
 use crate::theme::{Theme, ThemeName};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MouseAction {
+    Key(KeyCode, KeyModifiers),
+    Tab(Tab),
+    SiteRow(usize),
+    ConfigRow(usize),
+    DockerRow(usize),
+    CertRow(usize),
+    UpstreamRow(usize),
+    BackendRow(usize),
+    StoreRow(usize),
+    ServiceRow(usize),
+    CleanerRow(usize),
+    CleanerToggle(usize),
+    FtpDirRow(usize),
+    PickerRow(usize),
+    FileParentRow(usize),
+    FileCurrentRow(usize),
+    FileFocus(crate::files::FileFocus),
+    NewSiteField(usize),
+    SiteSettingsField(usize),
+}
+
+#[derive(Clone, Debug)]
+pub struct HitRegion {
+    pub area: Rect,
+    pub action: MouseAction,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -36,12 +68,15 @@ pub enum Tab {
     Certs,
     Ftp,
     Settings,
+    Services,
+    Store,
+    Cleaner,
     Config,
     Upstreams,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 11] = [
+    pub const ALL: [Tab; 14] = [
         Tab::Overview,
         Tab::Sites,
         Tab::Files,
@@ -51,6 +86,9 @@ impl Tab {
         Tab::Certs,
         Tab::Ftp,
         Tab::Settings,
+        Tab::Services,
+        Tab::Store,
+        Tab::Cleaner,
         Tab::Config,
         Tab::Upstreams,
     ];
@@ -66,6 +104,9 @@ impl Tab {
             Tab::Certs => "SSL",
             Tab::Ftp => "FTP",
             Tab::Settings => "设置",
+            Tab::Services => "系统服务",
+            Tab::Store => "应用商店",
+            Tab::Cleaner => "垃圾清理",
             Tab::Config => "配置",
             Tab::Upstreams => "上游",
         }
@@ -82,6 +123,9 @@ impl Tab {
             Self::Certs => "证书到期与自签名证书",
             Self::Ftp => "vsftpd 服务与配置摘要",
             Self::Settings => "路径、主题与应用信息",
+            Self::Services => "systemd 服务启停与开机启动",
+            Self::Store => "常用软件一键安装与卸载",
+            Self::Cleaner => "扫描并清理系统缓存与垃圾",
             Self::Config => "Nginx 配置浏览与编辑",
             Self::Upstreams => "upstream 后端与连通性",
         }
@@ -98,6 +142,9 @@ impl Tab {
             Self::Certs => "⛨",
             Self::Ftp => "⇅",
             Self::Settings => "⚙",
+            Self::Services => "◉",
+            Self::Store => "✦",
+            Self::Cleaner => "♲",
             Self::Config => "⚒",
             Self::Upstreams => "⇉",
         }
@@ -114,7 +161,8 @@ impl Tab {
             Self::Certs => Some('7'),
             Self::Ftp => Some('8'),
             Self::Settings => Some('9'),
-            Self::Config | Self::Upstreams => None,
+            Self::Services => None,
+            Self::Store | Self::Cleaner | Self::Config | Self::Upstreams => None,
         }
     }
 
@@ -181,6 +229,9 @@ pub enum InputTarget {
     NewDir,
     NewFile,
     RenameFile,
+    FtpNewDir,
+    FtpNewFile,
+    FtpRename,
     SslDomain,
 }
 
@@ -194,6 +245,10 @@ pub struct InputState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmAction {
     Service(Action),
+    Unit {
+        unit: String,
+        action: crate::service::UnitAction,
+    },
     ToggleSite {
         enable: bool,
     },
@@ -212,6 +267,18 @@ pub enum ConfirmAction {
     FileDelete {
         path: PathBuf,
         name: String,
+    },
+    Store {
+        name: String,
+        package: String,
+        install: bool,
+    },
+    Clean {
+        ids: Vec<String>,
+    },
+    FtpFileDelete {
+        name: String,
+        path: PathBuf,
     },
 }
 
@@ -450,6 +517,12 @@ impl NewSiteState {
         }
     }
 
+    pub fn focus_field(&mut self, field: NewSiteField) {
+        if let Some(index) = self.visible_fields().iter().position(|item| *item == field) {
+            self.focus = index;
+        }
+    }
+
     pub fn move_focus(&mut self, delta: isize) {
         let len = self.visible_fields().len() as isize;
         self.focus = ((self.focus as isize + delta).rem_euclid(len)) as usize;
@@ -598,6 +671,66 @@ impl std::fmt::Debug for EditorState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickerMode {
+    File,
+    Directory,
+}
+
+impl PickerMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::File => "选择文件",
+            Self::Directory => "选择文件夹",
+        }
+    }
+}
+
+pub enum PickerReturn {
+    SiteSettings(Box<SiteSettingsState>),
+    NewSite(Box<NewSiteState>),
+    OpenFile,
+}
+
+pub struct PickerState {
+    pub browser: FileBrowser,
+    pub mode: PickerMode,
+    pub return_state: PickerReturn,
+    pub error: Option<String>,
+}
+
+impl PickerState {
+    fn new(start: PathBuf, mode: PickerMode, return_state: PickerReturn) -> Self {
+        let start = if start.is_dir() { start } else { home_dir() };
+        Self {
+            browser: FileBrowser::new(start),
+            mode,
+            return_state,
+            error: None,
+        }
+    }
+
+    fn restore_overlay(self) -> Overlay {
+        match self.return_state {
+            PickerReturn::SiteSettings(state) => Overlay::SiteSettings(*state),
+            PickerReturn::NewSite(state) => Overlay::NewSite(*state),
+            PickerReturn::OpenFile => Overlay::None,
+        }
+    }
+
+    fn choose(&mut self) -> Result<PathBuf, String> {
+        match self.mode {
+            PickerMode::Directory => Ok(self.browser.cwd.clone()),
+            PickerMode::File => self
+                .browser
+                .selected()
+                .filter(|entry| !entry.is_dir)
+                .map(|entry| entry.path.clone())
+                .ok_or_else(|| "请选择一个文件。".into()),
+        }
+    }
+}
+
 #[derive(Default)]
 pub enum Overlay {
     #[default]
@@ -610,6 +743,7 @@ pub enum Overlay {
     Input(InputState),
     NewSite(NewSiteState),
     SiteSettings(SiteSettingsState),
+    Picker(PickerState),
 }
 
 pub struct LogState {
@@ -662,6 +796,12 @@ pub struct FilePreview {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FtpView {
+    Service,
+    Directories,
+}
+
 pub struct App {
     pub should_quit: bool,
     pub tab: Tab,
@@ -702,11 +842,20 @@ pub struct App {
     pub ftp: FtpSnapshot,
     pub files: FileBrowser,
     pub sidebar_collapsed: bool,
+    pub store: StoreState,
+    pub cleaner: CleanerState,
+    pub service_units: Vec<service::UnitStatus>,
+    pub service_selected: usize,
+    pub ftp_files: FileBrowser,
+    pub ftp_view: FtpView,
+    pub ftp_root_initialized: bool,
     pub overlay: Overlay,
     pub editor: Option<EditorState>,
     pub toast: Option<Toast>,
     pub last_status: Instant,
     pub last_refresh: Instant,
+    pub hits: RefCell<Vec<HitRegion>>,
+    pub last_click: Option<(Instant, MouseAction)>,
     pub preview_viewport: Cell<usize>,
     pub output_viewport: Cell<usize>,
     pub help_viewport: Cell<usize>,
@@ -765,6 +914,13 @@ impl App {
             ftp: FtpSnapshot::default(),
             files: FileBrowser::default(),
             sidebar_collapsed: false,
+            store: StoreState::default(),
+            cleaner: CleanerState::default(),
+            service_units: service::unit_statuses(),
+            service_selected: 0,
+            ftp_files: FileBrowser::default(),
+            ftp_view: FtpView::Service,
+            ftp_root_initialized: false,
             overlay: Overlay::None,
             editor: None,
             toast: None,
@@ -774,6 +930,8 @@ impl App {
             output_viewport: Cell::new(18),
             help_viewport: Cell::new(18),
             log_viewport: Cell::new(18),
+            hits: RefCell::new(Vec::new()),
+            last_click: None,
         };
         app.refresh_all(true);
         app.system.tick(true);
@@ -808,6 +966,161 @@ impl App {
             Overlay::SiteSettings(state) => !state.current_field().is_toggle(),
             Overlay::None => self.editor.is_some(),
             _ => false,
+        }
+    }
+
+    pub fn clear_hits(&self) {
+        self.hits.borrow_mut().clear();
+    }
+
+    pub fn register_hit(&self, area: Rect, action: MouseAction) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        self.hits.borrow_mut().push(HitRegion { area, action });
+    }
+
+    pub fn on_mouse(&mut self, mouse: MouseEvent) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let action = {
+                    let hits = self.hits.borrow();
+                    hits.iter()
+                        .rev()
+                        .find(|hit| {
+                            mouse.column >= hit.area.x
+                                && mouse.column < hit.area.right()
+                                && mouse.row >= hit.area.y
+                                && mouse.row < hit.area.bottom()
+                        })
+                        .map(|hit| hit.action.clone())
+                };
+                if let Some(action) = action {
+                    self.perform_mouse_action(action);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                self.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            }
+            MouseEventKind::ScrollUp => {
+                self.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+            }
+            _ => {}
+        }
+    }
+
+    fn perform_mouse_action(&mut self, action: MouseAction) {
+        let now = Instant::now();
+        let double = self
+            .last_click
+            .as_ref()
+            .map(|(at, previous)| at.elapsed() < Duration::from_millis(380) && *previous == action)
+            .unwrap_or(false);
+        match action.clone() {
+            MouseAction::Key(code, modifiers) => {
+                self.on_key(KeyEvent::new(code, modifiers));
+            }
+            MouseAction::Tab(tab) => self.set_tab(tab),
+            MouseAction::SiteRow(index) => {
+                self.site_selected = index;
+                if double {
+                    self.open_site_settings(Some(SettingsField::Domain));
+                }
+            }
+            MouseAction::ConfigRow(index) => {
+                self.config_selected = index;
+                self.preview_scroll = 0;
+                self.refresh_preview();
+                if double {
+                    self.edit_selected_config();
+                }
+            }
+            MouseAction::DockerRow(index) => self.docker_selected = index,
+            MouseAction::CertRow(index) => {
+                self.cert_selected = index;
+                if double {
+                    self.open_cert_details();
+                }
+            }
+            MouseAction::UpstreamRow(index) => {
+                self.upstream_selected = index;
+                self.backend_selected = 0;
+                self.upstream_focus = UpstreamFocus::Pools;
+            }
+            MouseAction::BackendRow(index) => {
+                self.backend_selected = index;
+                self.upstream_focus = UpstreamFocus::Backends;
+            }
+            MouseAction::StoreRow(index) => {
+                self.store.selected = index;
+                if double {
+                    self.show_store_details();
+                }
+            }
+            MouseAction::ServiceRow(index) => {
+                self.service_selected = index;
+                if double {
+                    self.request_unit_action(crate::service::UnitAction::Restart);
+                }
+            }
+            MouseAction::CleanerRow(index) => self.cleaner.selected = index,
+            MouseAction::CleanerToggle(index) => {
+                self.cleaner.selected = index;
+                self.cleaner.toggle_selected();
+            }
+            MouseAction::FtpDirRow(index) => {
+                self.ftp_files.set_current_selection(index);
+                if double {
+                    self.handle_ftp_directory_open();
+                }
+            }
+            MouseAction::PickerRow(index) => {
+                if let Overlay::Picker(picker) = &mut self.overlay {
+                    picker.browser.set_current_selection(index);
+                }
+                if double {
+                    self.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                }
+            }
+            MouseAction::FileParentRow(index) => {
+                self.files.set_parent_selection(index);
+                self.files.focus = crate::files::FileFocus::Parent;
+            }
+            MouseAction::FileCurrentRow(index) => {
+                self.files.set_current_selection(index);
+                self.files.focus = crate::files::FileFocus::Current;
+                if double {
+                    self.open_selected_file();
+                }
+            }
+            MouseAction::FileFocus(focus) => self.files.focus = focus,
+            MouseAction::NewSiteField(index) => {
+                if let Overlay::NewSite(form) = &mut self.overlay {
+                    form.focus = index.min(form.visible_fields().len().saturating_sub(1));
+                    let field = form.current_field();
+                    if field.is_toggle() {
+                        form.toggle_field(field);
+                    }
+                }
+            }
+            MouseAction::SiteSettingsField(index) => {
+                if let Overlay::SiteSettings(state) = &mut self.overlay {
+                    state.focus = index.min(state.visible_fields().len().saturating_sub(1));
+                    let field = state.current_field();
+                    if field.is_toggle() {
+                        state.toggle_field(field);
+                    }
+                }
+            }
+        }
+        self.last_click = Some((now, action));
+    }
+
+    fn handle_ftp_directory_open(&mut self) {
+        if let Some(entry) = self.ftp_files.selected().cloned()
+            && entry.is_dir
+        {
+            self.ftp_files.navigate(&entry.path);
         }
     }
 
@@ -882,6 +1195,9 @@ impl App {
             Tab::Monitor => self.handle_monitor_key(key),
             Tab::Ftp => self.handle_ftp_key(key),
             Tab::Settings => self.handle_settings_key(key),
+            Tab::Services => self.handle_services_key(key),
+            Tab::Store => self.handle_store_key(key),
+            Tab::Cleaner => self.handle_cleaner_key(key),
         }
     }
 
@@ -1025,6 +1341,8 @@ impl App {
             Tab::Docker => self.refresh_docker(),
             Tab::Ftp => self.refresh_ftp(),
             Tab::Monitor => self.system.tick(true),
+            Tab::Store => self.refresh_store(),
+            Tab::Cleaner => self.cleaner.refresh(),
             _ => {}
         }
     }
@@ -1164,6 +1482,18 @@ impl App {
         if self.tab == Tab::Ftp {
             self.refresh_ftp();
         }
+        if self.tab == Tab::Services {
+            self.service_units = service::unit_statuses();
+            self.service_selected = self
+                .service_selected
+                .min(self.service_units.len().saturating_sub(1));
+        }
+        if self.tab == Tab::Store {
+            self.refresh_store();
+        }
+        if self.tab == Tab::Cleaner {
+            self.cleaner.refresh();
+        }
         self.last_status = Instant::now();
         self.last_refresh = Instant::now();
         if !silent {
@@ -1243,6 +1573,31 @@ impl App {
 
     pub fn refresh_ftp(&mut self) {
         self.ftp.refresh();
+        self.ensure_ftp_files();
+    }
+
+    fn ensure_ftp_files(&mut self) {
+        if self.ftp_root_initialized {
+            return;
+        }
+        let root = self
+            .ftp
+            .setting("local_root")
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir())
+            .or_else(|| {
+                ["/var/ftp", "/srv/ftp"]
+                    .into_iter()
+                    .map(PathBuf::from)
+                    .find(|path| path.is_dir())
+            })
+            .unwrap_or_else(home_dir);
+        self.ftp_files = FileBrowser::new(root);
+        self.ftp_root_initialized = true;
+    }
+
+    pub fn refresh_store(&mut self) {
+        self.store.refresh();
     }
 
     fn refresh_process(&mut self) {
@@ -1821,17 +2176,67 @@ impl App {
     fn handle_files_key(&mut self, key: KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Down | KeyCode::Char('j') => self.files.move_selected(1),
-            KeyCode::Up | KeyCode::Char('k') => self.files.move_selected(-1),
-            KeyCode::PageDown => self.files.move_selected(8),
-            KeyCode::PageUp => self.files.move_selected(-8),
-            KeyCode::Char('g') | KeyCode::Home => self.files.selected = 0,
-            KeyCode::Char('G') | KeyCode::End => {
-                self.files.selected = self.files.entries.len().saturating_sub(1)
-            }
-            KeyCode::Enter => self.open_selected_file(),
-            KeyCode::Backspace | KeyCode::Char('h') if !ctrl => self.files.go_up(),
+            KeyCode::Left | KeyCode::Char('h') if !ctrl => self.files.focus_previous(),
+            KeyCode::Right | KeyCode::Char('l') if !ctrl => self.files.focus_next(),
+            KeyCode::Down | KeyCode::Char('j') => match self.files.focus {
+                crate::files::FileFocus::Parent => self.files.move_parent(1),
+                crate::files::FileFocus::Current => self.files.move_current(1),
+                crate::files::FileFocus::Preview => {
+                    self.files.preview.scroll = self.files.preview.scroll.saturating_add(1)
+                }
+            },
+            KeyCode::Up | KeyCode::Char('k') => match self.files.focus {
+                crate::files::FileFocus::Parent => self.files.move_parent(-1),
+                crate::files::FileFocus::Current => self.files.move_current(-1),
+                crate::files::FileFocus::Preview => {
+                    self.files.preview.scroll = self.files.preview.scroll.saturating_sub(1)
+                }
+            },
+            KeyCode::PageDown => match self.files.focus {
+                crate::files::FileFocus::Parent => self.files.move_parent(8),
+                crate::files::FileFocus::Current => self.files.move_current(8),
+                crate::files::FileFocus::Preview => {
+                    self.files.preview.scroll = self.files.preview.scroll.saturating_add(10)
+                }
+            },
+            KeyCode::PageUp => match self.files.focus {
+                crate::files::FileFocus::Parent => self.files.move_parent(-8),
+                crate::files::FileFocus::Current => self.files.move_current(-8),
+                crate::files::FileFocus::Preview => {
+                    self.files.preview.scroll = self.files.preview.scroll.saturating_sub(10)
+                }
+            },
+            KeyCode::Char('g') | KeyCode::Home => match self.files.focus {
+                crate::files::FileFocus::Parent => self.files.set_parent_selection(0),
+                crate::files::FileFocus::Current => self.files.set_current_selection(0),
+                crate::files::FileFocus::Preview => self.files.preview.scroll = 0,
+            },
+            KeyCode::Char('G') | KeyCode::End => match self.files.focus {
+                crate::files::FileFocus::Parent => self
+                    .files
+                    .set_parent_selection(self.files.parent_entries.len().saturating_sub(1)),
+                crate::files::FileFocus::Current => self
+                    .files
+                    .set_current_selection(self.files.entries.len().saturating_sub(1)),
+                crate::files::FileFocus::Preview => {
+                    self.files.preview.scroll = self.files.preview.lines.len().saturating_sub(1)
+                }
+            },
+            KeyCode::Enter => match self.files.focus {
+                crate::files::FileFocus::Parent => self.files.enter_parent(),
+                crate::files::FileFocus::Current => self.open_selected_file(),
+                crate::files::FileFocus::Preview => {}
+            },
+            KeyCode::Backspace => self.files.go_up(),
             KeyCode::Char('.') => self.files.toggle_hidden(),
+            KeyCode::Char('o') if ctrl || key.code == KeyCode::Char('b') => {
+                let picker = PickerState::new(
+                    self.files.cwd.clone(),
+                    PickerMode::File,
+                    PickerReturn::OpenFile,
+                );
+                self.overlay = Overlay::Picker(picker);
+            }
             KeyCode::Char('o') => self.open_input(InputTarget::FilePath),
             KeyCode::Char('n') => self.open_input(InputTarget::NewDir),
             KeyCode::Char('t') => self.open_input(InputTarget::NewFile),
@@ -1892,30 +2297,113 @@ impl App {
     }
 
     fn handle_ftp_key(&mut self, key: KeyEvent) {
-        match key.code {
-            KeyCode::Char('s') => self.ftp_action("start", false),
-            KeyCode::Char('S') => self.ftp_action("stop", true),
-            KeyCode::Char('r') => self.ftp_action("restart", true),
-            KeyCode::Char('l') => self.ftp_action("reload", false),
-            KeyCode::Char('e') => {
-                if let Some(path) = self.ftp.config_path.clone() {
-                    self.open_file_editor(path);
-                } else {
-                    self.toast(ToastKind::Warning, "没有找到 vsftpd 配置文件");
+        if matches!(key.code, KeyCode::Char('v')) {
+            self.ftp_view = match self.ftp_view {
+                FtpView::Service => FtpView::Directories,
+                FtpView::Directories => FtpView::Service,
+            };
+            if self.ftp_view == FtpView::Directories {
+                self.ensure_ftp_files();
+                self.ftp_files.refresh();
+            }
+            return;
+        }
+        match self.ftp_view {
+            FtpView::Service => match key.code {
+                KeyCode::Char('s') => self.ftp_action("start", false),
+                KeyCode::Char('S') => self.ftp_action("stop", true),
+                KeyCode::Char('r') => self.ftp_action("restart", true),
+                KeyCode::Char('l') => self.ftp_action("reload", false),
+                KeyCode::Char('e') => {
+                    if let Some(path) = self.ftp.config_path.clone() {
+                        self.open_file_editor(path);
+                    } else {
+                        self.toast(ToastKind::Warning, "没有找到 vsftpd 配置文件");
+                    }
                 }
-            }
-            KeyCode::Char('u') => {
-                self.refresh_ftp();
-                self.toast(ToastKind::Success, "FTP 状态已刷新");
-            }
-            _ => {}
+                KeyCode::Char('u') => {
+                    self.refresh_ftp();
+                    self.toast(ToastKind::Success, "FTP 状态已刷新");
+                }
+                _ => {}
+            },
+            FtpView::Directories => match key.code {
+                KeyCode::Down | KeyCode::Char('j') => self.ftp_files.move_current(1),
+                KeyCode::Up | KeyCode::Char('k') => self.ftp_files.move_current(-1),
+                KeyCode::PageDown => self.ftp_files.move_current(8),
+                KeyCode::PageUp => self.ftp_files.move_current(-8),
+                KeyCode::Char('g') | KeyCode::Home => self.ftp_files.set_current_selection(0),
+                KeyCode::Char('G') | KeyCode::End => {
+                    let last = self.ftp_files.entries.len().saturating_sub(1);
+                    self.ftp_files.set_current_selection(last);
+                }
+                KeyCode::Enter => {
+                    if let Some(entry) = self.ftp_files.selected().cloned()
+                        && entry.is_dir
+                    {
+                        self.ftp_files.navigate(&entry.path);
+                    }
+                }
+                KeyCode::Backspace => self.ftp_files.go_up(),
+                KeyCode::Char('n') => self.open_input(InputTarget::FtpNewDir),
+                KeyCode::Char('t') => self.open_input(InputTarget::FtpNewFile),
+                KeyCode::Char('r') => self.open_input(InputTarget::FtpRename),
+                KeyCode::Char('d') => self.request_ftp_delete(),
+                KeyCode::Char('e') => {
+                    if let Some(entry) = self.ftp_files.selected().cloned()
+                        && !entry.is_dir
+                    {
+                        self.open_file_editor(entry.path);
+                    }
+                }
+                KeyCode::Char('u') => {
+                    self.ftp_files.refresh();
+                    self.toast(ToastKind::Success, "FTP 目录已刷新");
+                }
+                _ => {}
+            },
         }
     }
 
+    fn request_ftp_delete(&mut self) {
+        if self.read_only {
+            self.toast(ToastKind::Warning, "只读模式：不能删除 FTP 项目");
+            return;
+        }
+        let Some(entry) = self.ftp_files.selected().cloned() else {
+            return;
+        };
+        self.overlay = Overlay::Confirm(ConfirmState {
+            title: format!("删除 FTP {}？", if entry.is_dir { "目录" } else { "文件" }),
+            message: vec![
+                entry.path.display().to_string(),
+                "会移入 nserver 回收站，可以手动恢复。".into(),
+            ],
+            action: ConfirmAction::FtpFileDelete {
+                name: entry.name,
+                path: entry.path,
+            },
+            danger: true,
+        });
+    }
+
     fn handle_settings_key(&mut self, key: KeyEvent) {
-        if matches!(key.code, KeyCode::Char('e')) {
-            let main = self.config.main.clone();
-            self.open_editor(main);
+        match key.code {
+            KeyCode::Char('e') => {
+                let main = self.config.main.clone();
+                self.open_editor(main);
+            }
+            KeyCode::Char('w') => {
+                let mut preferences = crate::user_config::UserConfig::load();
+                preferences.nginx_config = Some(self.config.main.clone());
+                preferences.theme = Some(self.theme.name.to_string());
+                preferences.read_only = Some(self.read_only);
+                match preferences.save() {
+                    Ok(()) => self.toast(ToastKind::Success, "设置已保存到 ~/.nserver/config.toml"),
+                    Err(err) => self.toast(ToastKind::Danger, err),
+                }
+            }
+            _ => {}
         }
     }
 
@@ -2127,6 +2615,222 @@ impl App {
         }
     }
 
+    fn apply_picker_choice(&mut self, picker: PickerState, path: PathBuf) {
+        match picker.return_state {
+            PickerReturn::SiteSettings(mut state) => {
+                state.root = path.display().to_string();
+                state.error = None;
+                state.focus_field(SettingsField::Root);
+                self.overlay = Overlay::SiteSettings(*state);
+            }
+            PickerReturn::NewSite(mut form) => {
+                form.spec.root = path.display().to_string();
+                form.error = None;
+                form.focus_field(NewSiteField::Root);
+                self.overlay = Overlay::NewSite(*form);
+            }
+            PickerReturn::OpenFile => {
+                if path.is_dir() {
+                    self.files.navigate(&path);
+                    self.overlay = Overlay::None;
+                } else {
+                    self.open_file_editor(path);
+                }
+            }
+        }
+    }
+
+    fn handle_services_key(&mut self, key: KeyEvent) {
+        let count = self.service_units.len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.service_selected = (self.service_selected + 1).min(count.saturating_sub(1));
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.service_selected = self.service_selected.saturating_sub(1);
+            }
+            KeyCode::Char('u') | KeyCode::F(5) => {
+                self.service_units = service::unit_statuses();
+                self.toast(ToastKind::Success, "服务状态已刷新");
+            }
+            KeyCode::Char('s') => self.request_unit_action(crate::service::UnitAction::Start),
+            KeyCode::Char('x') => self.request_unit_action(crate::service::UnitAction::Stop),
+            KeyCode::Char('r') => self.request_unit_action(crate::service::UnitAction::Restart),
+            KeyCode::Char('e') => self.request_unit_action(crate::service::UnitAction::Enable),
+            KeyCode::Char('d') => self.request_unit_action(crate::service::UnitAction::Disable),
+            _ => {}
+        }
+    }
+
+    fn request_unit_action(&mut self, action: crate::service::UnitAction) {
+        if self.read_only {
+            self.toast(ToastKind::Warning, "只读模式：不能操作系统服务");
+            return;
+        }
+        let Some(unit) = self.service_units.get(self.service_selected) else {
+            return;
+        };
+        self.overlay = Overlay::Confirm(ConfirmState {
+            title: format!("{} {}？", action.label(), unit.name),
+            message: vec![
+                unit.description.to_string(),
+                "将调用 systemctl 修改系统服务状态。".into(),
+            ],
+            action: ConfirmAction::Unit {
+                unit: unit.name.to_string(),
+                action,
+            },
+            danger: matches!(
+                action,
+                crate::service::UnitAction::Stop | crate::service::UnitAction::Disable
+            ),
+        });
+    }
+
+    fn handle_store_key(&mut self, key: KeyEvent) {
+        let count = self.store.apps.len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.store.selected = (self.store.selected + 1).min(count.saturating_sub(1))
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.store.selected = self.store.selected.saturating_sub(1)
+            }
+            KeyCode::PageDown => {
+                self.store.selected = (self.store.selected + 5).min(count.saturating_sub(1))
+            }
+            KeyCode::PageUp => self.store.selected = self.store.selected.saturating_sub(5),
+            KeyCode::Char('g') | KeyCode::Home => self.store.selected = 0,
+            KeyCode::Char('G') | KeyCode::End => self.store.selected = count.saturating_sub(1),
+            KeyCode::Char('u') => {
+                self.refresh_store();
+                self.toast(ToastKind::Success, "应用列表已刷新");
+            }
+            KeyCode::Char('i') => self.request_store_action(true),
+            KeyCode::Char('x') => self.request_store_action(false),
+            KeyCode::Enter => self.show_store_details(),
+            _ => {}
+        }
+    }
+
+    fn request_store_action(&mut self, install: bool) {
+        if self.read_only {
+            self.toast(ToastKind::Warning, "只读模式：不能安装或卸载软件");
+            return;
+        }
+        if !self.root {
+            self.toast(ToastKind::Warning, "安装/卸载软件需要 root 权限");
+            return;
+        }
+        let Some(app) = self.store.selected_app() else {
+            return;
+        };
+        if app.installed == install {
+            self.toast(
+                ToastKind::Info,
+                if install {
+                    "该软件已安装"
+                } else {
+                    "该软件尚未安装"
+                },
+            );
+            return;
+        }
+        self.overlay = Overlay::Confirm(ConfirmState {
+            title: format!("{} {}？", if install { "安装" } else { "卸载" }, app.name),
+            message: vec![
+                format!("软件包：{}", app.package),
+                if install {
+                    "会调用系统包管理器并修改系统环境。".into()
+                } else {
+                    "卸载可能影响正在运行的服务。".into()
+                },
+            ],
+            action: ConfirmAction::Store {
+                name: app.name.to_string(),
+                package: app.package.to_string(),
+                install,
+            },
+            danger: !install,
+        });
+    }
+
+    fn show_store_details(&mut self) {
+        let Some(app) = self.store.selected_app() else {
+            return;
+        };
+        let lines = vec![
+            format!("名称     {}", app.name),
+            format!("软件包   {}", app.package),
+            format!("分类     {}", app.category),
+            format!(
+                "状态     {}",
+                if app.installed {
+                    "已安装"
+                } else {
+                    "未安装"
+                }
+            ),
+            format!("包管理器 {}", self.store.manager.label()),
+            String::new(),
+            app.description.to_string(),
+            String::new(),
+            "i 安装 · x 卸载 · u 刷新".to_string(),
+        ];
+        self.overlay = Overlay::Output(OutputState {
+            title: format!("应用详情 · {}", app.name),
+            success: true,
+            lines,
+            scroll: 0,
+        });
+    }
+
+    fn handle_cleaner_key(&mut self, key: KeyEvent) {
+        let count = self.cleaner.items.len();
+        match key.code {
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.cleaner.selected = (self.cleaner.selected + 1).min(count.saturating_sub(1))
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.cleaner.selected = self.cleaner.selected.saturating_sub(1)
+            }
+            KeyCode::Char(' ') => self.cleaner.toggle_selected(),
+            KeyCode::Char('a') => self.cleaner.select_all(true),
+            KeyCode::Char('A') => self.cleaner.select_all(false),
+            KeyCode::Char('u') => {
+                self.cleaner.refresh();
+                self.toast(ToastKind::Success, "垃圾项已重新扫描");
+            }
+            KeyCode::Char('c') => self.request_clean(),
+            _ => {}
+        }
+    }
+
+    fn request_clean(&mut self) {
+        if self.read_only {
+            self.toast(ToastKind::Warning, "只读模式：不能清理系统文件");
+            return;
+        }
+        let ids = self.cleaner.selected_ids();
+        if ids.is_empty() {
+            self.toast(ToastKind::Info, "请先按 Space 选择要清理的项目");
+            return;
+        }
+        self.overlay = Overlay::Confirm(ConfirmState {
+            title: "清理选中的项目？".into(),
+            message: vec![
+                format!(
+                    "共 {} 项，预计释放 {}",
+                    ids.len(),
+                    crate::system::format_bytes(self.cleaner.selected_bytes())
+                ),
+                "清理操作不可撤销。".into(),
+            ],
+            action: ConfirmAction::Clean { ids },
+            danger: true,
+        });
+    }
+
     // ---------------------------------------------------------------- input
 
     fn open_input(&mut self, target: InputTarget) {
@@ -2140,6 +2844,15 @@ impl App {
             InputTarget::RenameFile => (
                 "重命名",
                 self.files
+                    .selected()
+                    .map(|entry| entry.name.clone())
+                    .unwrap_or_default(),
+            ),
+            InputTarget::FtpNewDir => ("FTP 新建目录", String::new()),
+            InputTarget::FtpNewFile => ("FTP 新建文件", String::new()),
+            InputTarget::FtpRename => (
+                "重命名 FTP 项目",
+                self.ftp_files
                     .selected()
                     .map(|entry| entry.name.clone())
                     .unwrap_or_default(),
@@ -2198,6 +2911,31 @@ impl App {
                 Ok(_) => self.toast(ToastKind::Success, "已重命名"),
                 Err(err) => self.toast(ToastKind::Danger, err),
             },
+            InputTarget::FtpNewDir | InputTarget::FtpNewFile => {
+                if self.read_only {
+                    self.toast(ToastKind::Warning, "只读模式：不能修改 FTP 目录");
+                    return;
+                }
+                let result = if input.target == InputTarget::FtpNewDir {
+                    self.ftp_files.create_dir(input.value.trim())
+                } else {
+                    self.ftp_files.create_file(input.value.trim())
+                };
+                match result {
+                    Ok(_) => self.toast(ToastKind::Success, "FTP 项目已创建"),
+                    Err(err) => self.toast(ToastKind::Danger, err),
+                }
+            }
+            InputTarget::FtpRename => {
+                if self.read_only {
+                    self.toast(ToastKind::Warning, "只读模式：不能重命名 FTP 项目");
+                    return;
+                }
+                match self.ftp_files.rename_selected(input.value.trim()) {
+                    Ok(_) => self.toast(ToastKind::Success, "FTP 项目已重命名"),
+                    Err(err) => self.toast(ToastKind::Danger, err),
+                }
+            }
             InputTarget::SslDomain => {
                 match crate::cert::generate_self_signed(
                     input.value.trim(),
@@ -2333,6 +3071,68 @@ impl App {
                 }
                 _ => self.overlay = Overlay::Input(input),
             },
+            Overlay::Picker(mut picker) => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = picker.restore_overlay();
+                }
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    match picker.choose() {
+                        Ok(path) => self.apply_picker_choice(picker, path),
+                        Err(err) => {
+                            picker.error = Some(err);
+                            self.overlay = Overlay::Picker(picker);
+                        }
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(entry) = picker.browser.selected().cloned() {
+                        if entry.is_dir {
+                            picker.browser.navigate(&entry.path);
+                            self.overlay = Overlay::Picker(picker);
+                        } else {
+                            match picker.choose() {
+                                Ok(path) => self.apply_picker_choice(picker, path),
+                                Err(err) => {
+                                    picker.error = Some(err);
+                                    self.overlay = Overlay::Picker(picker);
+                                }
+                            }
+                        }
+                    } else {
+                        self.overlay = Overlay::Picker(picker);
+                    }
+                }
+                KeyCode::Backspace => {
+                    picker.browser.go_up();
+                    self.overlay = Overlay::Picker(picker);
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    picker.browser.move_current(1);
+                    self.overlay = Overlay::Picker(picker);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    picker.browser.move_current(-1);
+                    self.overlay = Overlay::Picker(picker);
+                }
+                KeyCode::PageDown => {
+                    picker.browser.move_current(10);
+                    self.overlay = Overlay::Picker(picker);
+                }
+                KeyCode::PageUp => {
+                    picker.browser.move_current(-10);
+                    self.overlay = Overlay::Picker(picker);
+                }
+                KeyCode::Char('g') | KeyCode::Home => {
+                    picker.browser.set_current_selection(0);
+                    self.overlay = Overlay::Picker(picker);
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    let last = picker.browser.entries.len().saturating_sub(1);
+                    picker.browser.set_current_selection(last);
+                    self.overlay = Overlay::Picker(picker);
+                }
+                _ => self.overlay = Overlay::Picker(picker),
+            },
             Overlay::NewSite(mut form) => {
                 if key.modifiers.contains(KeyModifiers::CONTROL)
                     && matches!(key.code, KeyCode::Char('s'))
@@ -2344,6 +3144,20 @@ impl App {
                     return;
                 }
                 let field = form.current_field();
+                if field == NewSiteField::Root
+                    && (key.code == KeyCode::Char('b')
+                        || (key.modifiers.contains(KeyModifiers::CONTROL)
+                            && key.code == KeyCode::Char('o')))
+                {
+                    let start = PathBuf::from(form.spec.root.trim());
+                    let picker = PickerState::new(
+                        start,
+                        PickerMode::Directory,
+                        PickerReturn::NewSite(Box::new(form)),
+                    );
+                    self.overlay = Overlay::Picker(picker);
+                    return;
+                }
                 match key.code {
                     KeyCode::Esc => {}
                     KeyCode::Tab | KeyCode::Down => {
@@ -2424,6 +3238,20 @@ impl App {
                     return;
                 }
                 let field = state.current_field();
+                if field == SettingsField::Root
+                    && (key.code == KeyCode::Char('b')
+                        || (key.modifiers.contains(KeyModifiers::CONTROL)
+                            && key.code == KeyCode::Char('o')))
+                {
+                    let start = PathBuf::from(state.root.trim());
+                    let picker = PickerState::new(
+                        start,
+                        PickerMode::Directory,
+                        PickerReturn::SiteSettings(Box::new(state)),
+                    );
+                    self.overlay = Overlay::Picker(picker);
+                    return;
+                }
                 match key.code {
                     KeyCode::Esc => {}
                     KeyCode::Tab | KeyCode::Down => {
@@ -2588,6 +3416,22 @@ impl App {
     fn execute_confirm(&mut self, action: ConfirmAction) {
         match action {
             ConfirmAction::Service(action) => self.run_service(action),
+            ConfirmAction::Unit { unit, action } => {
+                let result = service::unit_action(&unit, action);
+                self.service_units = service::unit_statuses();
+                self.overlay = Overlay::Output(OutputState::from_results(
+                    action.label(),
+                    std::slice::from_ref(&result),
+                ));
+                if result.success {
+                    self.toast(
+                        ToastKind::Success,
+                        format!("{unit}：{}完成", action.label()),
+                    );
+                } else {
+                    self.toast(ToastKind::Danger, result.summary());
+                }
+            }
             ConfirmAction::ToggleSite { enable } => self.perform_site_toggle(enable),
             ConfirmAction::DeleteSite => self.perform_delete_site(),
             ConfirmAction::DiscardEditor => {
@@ -2643,6 +3487,67 @@ impl App {
                     Err(err) => self.toast(ToastKind::Danger, err),
                 }
             }
+            ConfirmAction::Store {
+                name,
+                package,
+                install,
+            } => {
+                if !self.root {
+                    self.toast(ToastKind::Warning, "安装/卸载软件需要 root 权限");
+                } else if self.store.manager == crate::appstore::PackageManager::Unsupported {
+                    self.toast(ToastKind::Warning, "当前系统没有支持的包管理器");
+                } else {
+                    match crate::appstore::apply(self.store.manager, &package, install) {
+                        Ok(output) => {
+                            self.refresh_store();
+                            self.overlay = Overlay::Output(OutputState {
+                                title: format!(
+                                    "{} {}",
+                                    if install { "安装" } else { "卸载" },
+                                    name
+                                ),
+                                success: true,
+                                lines: output.lines().map(ToString::to_string).collect(),
+                                scroll: 0,
+                            });
+                        }
+                        Err(err) => {
+                            self.overlay = Overlay::Output(OutputState::from_message(
+                                format!("{} {}", if install { "安装" } else { "卸载" }, name),
+                                false,
+                                err,
+                            ));
+                        }
+                    }
+                }
+            }
+            ConfirmAction::FtpFileDelete { name, path } => {
+                match crate::files::delete_path_to_trash(&path) {
+                    Ok(target) => {
+                        self.ftp_files.refresh();
+                        self.toast(
+                            ToastKind::Success,
+                            format!("{name} 已移入 {}", target.display()),
+                        );
+                    }
+                    Err(err) => self.toast(ToastKind::Danger, err),
+                }
+            }
+            ConfirmAction::Clean { ids } => match crate::cleaner::clean(&ids) {
+                Ok(output) => {
+                    self.cleaner.refresh();
+                    self.overlay = Overlay::Output(OutputState {
+                        title: "垃圾清理".into(),
+                        success: true,
+                        lines: output.lines().map(ToString::to_string).collect(),
+                        scroll: 0,
+                    });
+                }
+                Err(err) => {
+                    self.overlay =
+                        Overlay::Output(OutputState::from_message("垃圾清理", false, err));
+                }
+            },
         }
     }
 
@@ -3455,6 +4360,54 @@ mod tests {
         assert_eq!(form.spec.server_name, "_");
         assert_eq!(form.spec.file_name, "forward-8080");
         assert_eq!(form.spec.listen, "8080");
+    }
+
+    #[test]
+    fn picker_returns_selected_directory_to_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        fs::create_dir_all(root.join("sites-available")).unwrap();
+        fs::create_dir_all(root.join("sites-enabled")).unwrap();
+        let site = root.join("sites-available/demo.conf");
+        fs::write(
+            &site,
+            "server {\n    listen 8080;\n    server_name demo.test;\n    root /tmp/old;\n    location / {\n        try_files $uri $uri/ =404;\n    }\n}\n",
+        )
+        .unwrap();
+        symlink(
+            "../sites-available/demo.conf",
+            root.join("sites-enabled/demo.conf"),
+        )
+        .unwrap();
+        fs::write(
+            root.join("nginx.conf"),
+            "events {}\nhttp { include sites-enabled/*.conf; }\n",
+        )
+        .unwrap();
+        let target = root.join("target");
+        fs::create_dir(&target).unwrap();
+
+        let mut app = App::new(Cli {
+            config: root.join("nginx.conf"),
+            ..Default::default()
+        });
+        app.tab = Tab::Sites;
+        app.site_selected = 0;
+        app.open_site_settings(Some(SettingsField::Root));
+        let previous = std::mem::replace(&mut app.overlay, Overlay::None);
+        let Overlay::SiteSettings(settings) = previous else {
+            panic!("settings overlay did not open");
+        };
+        let picker = PickerState::new(
+            target.clone(),
+            PickerMode::Directory,
+            PickerReturn::SiteSettings(Box::new(settings)),
+        );
+        app.apply_picker_choice(picker, target.clone());
+        let Overlay::SiteSettings(settings) = app.overlay else {
+            panic!("picker did not return to settings");
+        };
+        assert_eq!(settings.root, target.display().to_string());
     }
 
     #[test]

@@ -33,6 +33,14 @@ fn paths_panel(frame: &mut Frame, area: Rect, app: &App) {
         kv(theme, "Nginx 配置", &app.config.main.display().to_string()),
         kv(
             theme,
+            "NSERVER 偏好",
+            &crate::user_config::UserConfig::load()
+                .path
+                .display()
+                .to_string(),
+        ),
+        kv(
+            theme,
             "配置目录",
             &app.config.config_dir.display().to_string(),
         ),

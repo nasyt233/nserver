@@ -12,6 +12,58 @@ pub enum Manager {
     Direct,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnitAction {
+    Start,
+    Stop,
+    Restart,
+    Enable,
+    Disable,
+}
+
+impl UnitAction {
+    pub fn verb(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Restart => "restart",
+            Self::Enable => "enable",
+            Self::Disable => "disable",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Start => "启动",
+            Self::Stop => "停止",
+            Self::Restart => "重启",
+            Self::Enable => "设为开机启动",
+            Self::Disable => "取消开机启动",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnitStatus {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub active: String,
+    pub enabled: String,
+}
+
+pub const MANAGED_UNITS: &[(&str, &str)] = &[
+    ("nginx", "Nginx 网页服务"),
+    ("docker", "Docker 容器引擎"),
+    ("ssh", "OpenSSH 服务"),
+    ("sshd", "OpenSSH 服务（RHEL）"),
+    ("vsftpd", "FTP 文件服务"),
+    ("redis-server", "Redis 数据库"),
+    ("mariadb", "MariaDB 数据库"),
+    ("postgresql", "PostgreSQL 数据库"),
+    ("fail2ban", "登录防护"),
+    ("ufw", "UFW 防火墙"),
+];
+
 impl Manager {
     pub fn label(self) -> &'static str {
         match self {
@@ -131,6 +183,56 @@ fn systemctl_path() -> Option<PathBuf> {
         .into_iter()
         .map(PathBuf::from)
         .find(|p| p.is_file())
+}
+
+pub fn unit_statuses() -> Vec<UnitStatus> {
+    let available = Path::new("/run/systemd/system").is_dir() && systemctl_path().is_some();
+    MANAGED_UNITS
+        .iter()
+        .map(|(name, description)| UnitStatus {
+            name,
+            description,
+            active: if available {
+                unit_query(name, "is-active")
+            } else {
+                "systemd 不可用".into()
+            },
+            enabled: if available {
+                unit_query(name, "is-enabled")
+            } else {
+                "—".into()
+            },
+        })
+        .collect()
+}
+
+pub fn unit_action(unit: &str, action: UnitAction) -> CommandResult {
+    if !MANAGED_UNITS.iter().any(|(name, _)| *name == unit) {
+        return CommandResult::error("服务操作", "不允许操作未列入管理清单的服务。");
+    }
+    if !Path::new("/run/systemd/system").is_dir() {
+        return CommandResult::error(action.label(), "当前系统未运行 systemd。");
+    }
+    let Some(systemctl) = systemctl_path() else {
+        return CommandResult::error(action.label(), "没有找到 systemctl。");
+    };
+    let mut cmd = Command::new(systemctl);
+    cmd.arg(action.verb()).arg(unit);
+    run(cmd, action.label())
+}
+
+fn unit_query(unit: &str, verb: &str) -> String {
+    let Some(systemctl) = systemctl_path() else {
+        return "不可用".into();
+    };
+    Command::new(systemctl)
+        .arg(verb)
+        .arg(unit)
+        .output()
+        .ok()
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "未安装".into())
 }
 
 pub fn detect_binary(explicit: Option<&Path>) -> Option<PathBuf> {

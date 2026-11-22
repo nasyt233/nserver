@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use crate::app::App;
+use crate::app::{App, MouseAction};
 use crate::theme::Theme;
 use crate::ui::widgets::{center_percent, clear_popup, panel};
 
@@ -27,6 +27,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, scroll: usize) {
             .wrap(Wrap { trim: false }),
         body,
     );
+    let footer = Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("↑↓", Style::default().fg(theme.accent)),
@@ -35,7 +36,14 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, scroll: usize) {
             Span::styled(" 关闭", Style::default().fg(theme.faint)),
         ]))
         .alignment(Alignment::Right),
-        Rect::new(inner.x, inner.y + inner.height - 1, inner.width, 1),
+        footer,
+    );
+    app.register_hit(
+        footer,
+        MouseAction::Key(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ),
     );
 }
 
@@ -108,6 +116,8 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
     section(&mut lines, theme, "文件");
     item(&mut lines, theme, "↑↓ / Enter", "选择；目录进入，文件预览");
     item(&mut lines, theme, "e", "编辑文本文件（自动备份）");
+    item(&mut lines, theme, "b / Ctrl+O", "选择文件并打开编辑器");
+    item(&mut lines, theme, "← →", "父目录 / 当前目录 / 预览三栏切换");
     item(&mut lines, theme, "n / t", "新建目录 / 文件");
     item(&mut lines, theme, "r", "重命名选中项");
     item(&mut lines, theme, "d", "移入 ~/.nserver/trash");
@@ -142,6 +152,26 @@ fn help_lines(theme: &Theme) -> Vec<Line<'static>> {
         "FTP 启动 / 停止 / 重启 / 重载",
     );
     item(&mut lines, theme, "e（FTP）", "编辑 vsftpd.conf");
+
+    section(&mut lines, theme, "应用商店 / 垃圾清理");
+    item(
+        &mut lines,
+        theme,
+        "Store",
+        "i 安装 / x 卸载 / Enter 详情 / u 刷新",
+    );
+    item(
+        &mut lines,
+        theme,
+        "Cleaner",
+        "Space 勾选 / a 全选 / c 清理 / u 扫描",
+    );
+    item(
+        &mut lines,
+        theme,
+        "FTP 目录",
+        "FTP 页按 v 切换服务/目录，n/t/r/d 管理",
+    );
 
     section(&mut lines, theme, "配置与上游");
     item(&mut lines, theme, "e / Enter", "编辑 Nginx 配置");

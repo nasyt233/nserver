@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Paragraph, Wrap};
 
-use crate::app::App;
+use crate::app::{App, MouseAction};
 use crate::logs::format_bytes;
 use crate::theme::Theme;
 use crate::ui::widgets::{empty_state, panel_focused, truncate};
@@ -94,6 +94,12 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
         ]));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+    for index in start..end {
+        app.register_hit(
+            Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
+            MouseAction::ConfigRow(index),
+        );
+    }
 }
 
 fn draw_preview(frame: &mut Frame, area: Rect, app: &App) {

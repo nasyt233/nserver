@@ -1,4 +1,5 @@
 mod certs;
+mod cleaner;
 mod config;
 mod docker;
 mod files;
@@ -8,18 +9,22 @@ mod home;
 mod logs;
 mod modals;
 mod monitor;
+mod services;
 mod settings;
 mod sites;
+mod store;
 mod upstreams;
 mod widgets;
 
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Paragraph, Wrap};
+use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Tab};
+use crate::app::{App, MouseAction, Tab};
 use crate::theme::Theme;
 use widgets::{badge, fill, hint_line_fit, panel, truncate};
 
@@ -36,6 +41,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
 
+    app.clear_hits();
     if app.editor.is_some() {
         draw_editor(frame, area, app);
     } else {
@@ -240,6 +246,10 @@ fn draw_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             truncate(&text, inner.width as usize),
             style,
         )));
+        app.register_hit(
+            Rect::new(inner.x, inner.y + index as u16, inner.width, 1),
+            MouseAction::Tab(*tab),
+        );
     }
     frame.render_widget(Paragraph::new(lines), inner);
 }
@@ -255,6 +265,9 @@ fn draw_content(frame: &mut Frame, area: Rect, app: &App) {
         Tab::Certs => certs::draw(frame, area, app),
         Tab::Ftp => ftp::draw(frame, area, app),
         Tab::Settings => settings::draw(frame, area, app),
+        Tab::Services => services::draw(frame, area, app),
+        Tab::Store => store::draw(frame, area, app),
+        Tab::Cleaner => cleaner::draw(frame, area, app),
         Tab::Config => config::draw(frame, area, app),
         Tab::Upstreams => upstreams::draw(frame, area, app),
     }
@@ -273,6 +286,35 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         Paragraph::new(hint_line_fit(theme, &hints, left.width as usize))
             .style(Style::default().bg(theme.footer_bg)),
         left,
+    );
+    let mut used = 0u16;
+    for (key, label) in &hints {
+        let width =
+            2 + UnicodeWidthStr::width(*key) as u16 + 2 + UnicodeWidthStr::width(*label) as u16 + 1;
+        if used > 0 && used + width > left.width {
+            break;
+        }
+        if let Some(event) = hint_key_event(key) {
+            app.register_hit(
+                Rect::new(
+                    left.x + used,
+                    left.y,
+                    width.min(left.width.saturating_sub(used)),
+                    1,
+                ),
+                MouseAction::Key(event.code, event.modifiers),
+            );
+        }
+        used = used.saturating_add(width);
+    }
+    let half = cols[1].width / 2;
+    app.register_hit(
+        Rect::new(cols[1].x, cols[1].y, half, 1),
+        MouseAction::Key(KeyCode::Char('q'), KeyModifiers::NONE),
+    );
+    app.register_hit(
+        Rect::new(cols[1].x + half, cols[1].y, cols[1].width - half, 1),
+        MouseAction::Key(KeyCode::Char('?'), KeyModifiers::NONE),
     );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
@@ -295,6 +337,29 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
         .style(Style::default().bg(theme.footer_bg)),
         cols[1],
     );
+}
+
+fn hint_key_event(key: &str) -> Option<KeyEvent> {
+    let event = match key {
+        "↑↓" => KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        "←→" => KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+        "Space" => KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+        "Enter" => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        "Esc" => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        "Tab" => KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        "Ctrl+D/U" => KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        "Ctrl+R" => KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        "Ctrl+B" => KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+        "Ctrl+O" => KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        "[/]" => KeyEvent::new(KeyCode::Char('['), KeyModifiers::NONE),
+        "a/A" => KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+        "F5" => KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE),
+        value if value.chars().count() == 1 => {
+            KeyEvent::new(KeyCode::Char(value.chars().next()?), KeyModifiers::NONE)
+        }
+        _ => return None,
+    };
+    Some(event)
 }
 
 fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
@@ -324,6 +389,7 @@ fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("/", "筛选"),
         ],
         Tab::Files => vec![
+            ("←→", "窗格"),
             ("↑↓", "选择"),
             ("Enter", "进入/预览"),
             ("e", "编辑"),
@@ -358,15 +424,54 @@ fn footer_hints(app: &App) -> Vec<(&'static str, &'static str)> {
             ("n", "自签名"),
             ("Ctrl+R", "刷新"),
         ],
-        Tab::Ftp => vec![
+        Tab::Ftp => match app.ftp_view {
+            crate::app::FtpView::Service => vec![
+                ("s", "启动"),
+                ("S", "停止"),
+                ("r", "重启"),
+                ("l", "重载"),
+                ("e", "配置"),
+                ("v", "目录"),
+                ("u", "刷新"),
+            ],
+            crate::app::FtpView::Directories => vec![
+                ("↑↓", "选择"),
+                ("Enter", "进入"),
+                ("n", "新建目录"),
+                ("t", "新建文件"),
+                ("r", "重命名"),
+                ("d", "删除"),
+                ("v", "服务"),
+                ("u", "刷新"),
+            ],
+        },
+        Tab::Settings => vec![
+            ("T", "主题"),
+            ("e", "编辑主配置"),
+            ("w", "保存 ~/.nserver"),
+            ("Ctrl+B", "侧栏"),
+        ],
+        Tab::Services => vec![
             ("s", "启动"),
-            ("S", "停止"),
+            ("x", "停止"),
             ("r", "重启"),
-            ("l", "重载"),
-            ("e", "配置"),
+            ("e/d", "开机启停"),
             ("u", "刷新"),
         ],
-        Tab::Settings => vec![("T", "主题"), ("e", "编辑主配置"), ("Ctrl+B", "侧栏")],
+        Tab::Store => vec![
+            ("↑↓", "选择"),
+            ("i", "安装"),
+            ("x", "卸载"),
+            ("Enter", "详情"),
+            ("u", "刷新"),
+        ],
+        Tab::Cleaner => vec![
+            ("↑↓", "选择"),
+            ("Space", "勾选"),
+            ("a/A", "全选/取消"),
+            ("c", "清理"),
+            ("u", "扫描"),
+        ],
         Tab::Config => vec![
             ("↑↓", "文件"),
             ("e", "编辑"),
@@ -445,6 +550,25 @@ fn draw_editor(frame: &mut Frame, area: Rect, app: &App) {
             .alignment(Alignment::Right)
             .style(Style::default().bg(theme.footer_bg)),
         cols[1],
+    );
+    app.register_hit(
+        Rect::new(footer_area.x, footer_area.y, footer_area.width / 2, 1),
+        MouseAction::Key(
+            crossterm::event::KeyCode::Char('s'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ),
+    );
+    app.register_hit(
+        Rect::new(
+            footer_area.x + footer_area.width / 2,
+            footer_area.y,
+            footer_area.width - footer_area.width / 2,
+            1,
+        ),
+        MouseAction::Key(
+            crossterm::event::KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ),
     );
 }
 

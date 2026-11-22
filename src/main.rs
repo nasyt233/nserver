@@ -1,5 +1,7 @@
 mod app;
+mod appstore;
 mod cert;
+mod cleaner;
 mod cli;
 mod config;
 mod docker;
@@ -11,13 +13,17 @@ mod sites;
 mod system;
 mod theme;
 mod ui;
+mod user_config;
 
 use std::io::{self, Stdout};
 use std::panic;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event};
+use crossterm::event::{
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -54,7 +60,12 @@ fn main() -> Result<()> {
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    if let Err(err) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
+    if let Err(err) = execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    ) {
         let _ = disable_raw_mode();
         return Err(err.into());
     }
@@ -67,7 +78,12 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 fn restore_terminal() {
     let _ = disable_raw_mode();
     let mut stdout = io::stdout();
-    let _ = execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
+    let _ = execute!(
+        stdout,
+        DisableMouseCapture,
+        DisableBracketedPaste,
+        LeaveAlternateScreen
+    );
     let _ = execute!(stdout, crossterm::cursor::Show);
 }
 
@@ -82,6 +98,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Resu
         if event::poll(Duration::from_millis(200))? {
             match event::read()? {
                 Event::Key(key) => app.on_key(key),
+                Event::Mouse(mouse) => app.on_mouse(mouse),
                 Event::Paste(text) => app.on_paste(&text),
                 Event::Resize(_, _) => {}
                 _ => {}

@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, Wrap};
 
-use crate::app::App;
+use crate::app::{App, MouseAction};
 use crate::theme::Theme;
 use crate::ui::widgets::{empty_state, pad_display, panel_focused, truncate};
 
@@ -116,6 +116,17 @@ fn draw_list(frame: &mut Frame, area: Rect, app: &App) {
         )
         .column_spacing(1);
     frame.render_widget(table, inner);
+    for index in start..end {
+        app.register_hit(
+            Rect::new(
+                inner.x,
+                inner.y + 1 + (index - start) as u16,
+                inner.width,
+                1,
+            ),
+            MouseAction::SiteRow(index),
+        );
+    }
 
     if end < sites.len() {
         let hint = format!("↓ 还有 {} 个", sites.len() - end);

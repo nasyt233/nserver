@@ -1,16 +1,18 @@
-  ◆ NSERVER  v0.3.0   NGINX ON    DOCKER OFF    FTP OFF                               localhost  ·  load —  ·  08:28:24 
+  ◆ NSERVER  v1.0.0   NGINX ON    DOCKER OFF    FTP OFF                               localhost  ·  load —  ·  14:17:39 
  ≡ 日志   Nginx 访问与错误日志                                                               Ctrl+B 侧栏  ·  Tab 页面   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ╭ 导航 ────────────╮╭ 日志 · 错误  [4/6] ──────────────────────────────────────────────────────────────────────────────╮
-│ 1  ⌂ 首页        ││ ERROR  demo.error.log /tmp/nserver-shots/logs/demo.erro…  1.4 KB  自动  跟随                     │
+│ 1  ⌂ 首页        ││ ERROR  demo.error.log /tmp/nserver-shots/logs/demo.erro…  1.9 KB  自动  跟随                     │
 │ 2  ◈ 站点        ││× 2026/11/22 08:22:58 [error] 30475#30475: *9 connect() failed (111: Connection refused) while con│
 │ 3  ▤ 文件        ││× 2026/11/22 08:22:58 [error] 30475#30475: *9 connect() failed (111: Connection refused) while con│
 │ 4  ▣ Docker      ││× 2026/11/22 08:25:31 [error] 596#596: *9 connect() failed (111: Connection refused) while connect│
 │ 5  ◔ 监控        ││× 2026/11/22 08:25:31 [error] 596#596: *9 connect() failed (111: Connection refused) while connect│
 │ 6  ≡ 日志        ││× 2026/11/22 08:28:01 [error] 5655#5655: *9 connect() failed (111: Connection refused) while conne│
 │ 7  ⛨ SSL         ││× 2026/11/22 08:28:01 [error] 5655#5655: *9 connect() failed (111: Connection refused) while conne│
-│ 8  ⇅ FTP         ││                                                                                                  │
-│ 9  ⚙ 设置        ││                                                                                                  │
+│ 8  ⇅ FTP         ││× 2026/11/22 14:17:15 [error] 8740#8740: *9 connect() failed (111: Connection refused) while conne│
+│ 9  ⚙ 设置        ││× 2026/11/22 14:17:15 [error] 8740#8740: *9 connect() failed (111: Connection refused) while conne│
+│ ·  ✦ 应用商店    ││                                                                                                  │
+│ ·  ♲ 垃圾清理    ││                                                                                                  │
 │ ·  ⚒ 配置        ││                                                                                                  │
 │ ·  ⇉ 上游        ││                                                                                                  │
 │                  ││                                                                                                  │
@@ -29,8 +31,6 @@
 │                  ││                                                                                                  │
 │                  ││                                                                                                  │
 │                  ││                                                                                                  │
-│                  ││                                                                                                  │
-│                  ││                                                                                                  │
-│                  ││共 6 行 · 显示 6 行 · [ ] 换源 · L 类型 · f 跟随 · a 自动 · u 刷新                                │
+│                  ││共 8 行 · 显示 8 行 · [ ] 换源 · L 类型 · f 跟随 · a 自动 · u 刷新                                │
 ╰──────────────────╯╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
   ↑↓  滚动   f  跟随   a  自动   L  类型   [/]  换源   /  筛选                                           q 退出  ? 帮助 

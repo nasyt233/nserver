@@ -4,11 +4,15 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, Wrap};
 
-use crate::app::App;
+use crate::app::{App, FtpView, MouseAction};
 use crate::ui::widgets::{empty_state, panel, truncate};
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
+    if app.ftp_view == FtpView::Directories {
+        draw_directories(frame, area, app);
+        return;
+    }
     if !app.ftp.installed {
         let mut message =
             "没有检测到 vsftpd。\n\n安装后可在这里启停服务、查看配置和用户。".to_string();
@@ -95,6 +99,111 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             rows[2],
         );
     }
+}
+
+fn draw_directories(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let rows = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Min(5),
+        Constraint::Length(1),
+    ])
+    .split(area);
+    let path_block = panel(theme, "FTP 目录管理");
+    let inner = path_block.inner(rows[0]);
+    frame.render_widget(path_block, rows[0]);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("▤ ", Style::default().fg(theme.accent)),
+            Span::styled(
+                truncate(
+                    &app.ftp_files.cwd.display().to_string(),
+                    inner.width.saturating_sub(2) as usize,
+                ),
+                Style::default().fg(theme.fg).add_modifier(Modifier::BOLD),
+            ),
+        ])),
+        inner,
+    );
+    let block = panel(theme, format!("目录 · {} 项", app.ftp_files.entries.len()));
+    let inner = block.inner(rows[1]);
+    frame.render_widget(block, rows[1]);
+    if let Some(error) = &app.ftp_files.error {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                error.clone(),
+                Style::default().fg(theme.danger),
+            ))
+            .wrap(Wrap { trim: true }),
+            inner,
+        );
+    } else if app.ftp_files.entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "空目录 · n 新建目录 · t 新建文件",
+                Style::default().fg(theme.faint),
+            )),
+            inner,
+        );
+    } else {
+        let visible = inner.height as usize;
+        let selected = app
+            .ftp_files
+            .selected
+            .min(app.ftp_files.entries.len().saturating_sub(1));
+        let start = selected.saturating_sub(visible / 2);
+        let end = (start + visible.max(1)).min(app.ftp_files.entries.len());
+        let mut lines = Vec::new();
+        for (index, entry) in app
+            .ftp_files
+            .entries
+            .iter()
+            .enumerate()
+            .take(end)
+            .skip(start)
+        {
+            let style = if index == selected {
+                Style::default()
+                    .bg(theme.selection_bg)
+                    .fg(theme.selection_fg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.fg)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    if entry.is_dir { "▸ " } else { "· " },
+                    Style::default().fg(if entry.is_dir {
+                        theme.info
+                    } else {
+                        theme.faint
+                    }),
+                ),
+                Span::styled(
+                    truncate(&entry.name, inner.width.saturating_sub(18) as usize),
+                    style,
+                ),
+                Span::styled(
+                    format!("{:>9}  {}", entry.size_label(), entry.modified_label()),
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+        }
+        frame.render_widget(Paragraph::new(lines), inner);
+        for index in start..end {
+            app.register_hit(
+                Rect::new(inner.x, inner.y + (index - start) as u16, inner.width, 1),
+                MouseAction::FtpDirRow(index),
+            );
+        }
+    }
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "v 返回服务 · Enter 进入目录 · n 新建目录 · t 新建文件 · r 重命名 · d 删除 · Backspace 上级",
+            Style::default().fg(theme.faint),
+        )),
+        rows[2],
+    );
 }
 
 fn draw_settings(frame: &mut Frame, area: Rect, app: &App) {

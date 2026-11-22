@@ -8,6 +8,7 @@ use crate::theme::ThemeName;
 pub struct Cli {
     pub config: PathBuf,
     pub config_explicit: bool,
+    pub read_only_explicit: bool,
     pub bin: Option<PathBuf>,
     pub read_only: bool,
     pub theme: Option<ThemeName>,
@@ -20,6 +21,7 @@ impl Default for Cli {
         Self {
             config: PathBuf::from("/etc/nginx/nginx.conf"),
             config_explicit: false,
+            read_only_explicit: false,
             bin: None,
             read_only: false,
             theme: None,
@@ -42,7 +44,10 @@ where
         match arg.as_str() {
             "-h" | "--help" => cli.show_help = true,
             "-V" | "--version" => cli.show_version = true,
-            "--read-only" | "--readonly" | "-r" => cli.read_only = true,
+            "--read-only" | "--readonly" | "-r" => {
+                cli.read_only = true;
+                cli.read_only_explicit = true;
+            }
             "-c" | "--config" => {
                 let value = args
                     .next()
@@ -85,14 +90,23 @@ where
         }
     }
 
+    let preferences = crate::user_config::UserConfig::load();
     if !cli.config_explicit {
         if let Some(path) =
             std::env::var_os("NSERVER_CONFIG").or_else(|| std::env::var_os("NGINX_CONFIG"))
         {
             cli.config = PathBuf::from(path);
+        } else if let Some(path) = preferences.nginx_config {
+            cli.config = path;
         } else if let Some(path) = detect_config() {
             cli.config = path;
         }
+    }
+    if !cli.read_only_explicit {
+        cli.read_only = preferences.read_only.unwrap_or(false);
+    }
+    if cli.theme.is_none() {
+        cli.theme = preferences.theme.as_deref().and_then(ThemeName::parse);
     }
     Ok(cli)
 }
@@ -169,6 +183,13 @@ mod tests {
         let cli = parse(["nserver", "--theme=ember", "/srv/nginx.conf"]).unwrap();
         assert_eq!(cli.config, PathBuf::from("/srv/nginx.conf"));
         assert_eq!(cli.theme, Some(ThemeName::Ember));
+    }
+
+    #[test]
+    fn explicit_cli_config_is_preserved() {
+        let cli = parse(["nserver", "--config", "/tmp/custom-nginx.conf"]).unwrap();
+        assert_eq!(cli.config, PathBuf::from("/tmp/custom-nginx.conf"));
+        assert!(cli.config_explicit);
     }
 
     #[test]

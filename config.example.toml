@@ -1,0 +1,11 @@
+# NSERVER per-user configuration
+# Copy to ~/.nserver/config.toml, or use 设置 -> w to create it.
+
+# Nginx main configuration path
+nginx_config = "/etc/nginx/nginx.conf"
+
+# midnight | forest | ember | mono
+theme = "midnight"
+
+# Disable all write operations when true
+read_only = false

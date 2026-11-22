@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table};
 
-use crate::app::{App, UpstreamFocus};
+use crate::app::{App, MouseAction, UpstreamFocus};
 use crate::config::{UpstreamInfo, file_label};
 use crate::ui::widgets::{empty_state, format_age, panel_focused, truncate};
 
@@ -79,6 +79,17 @@ fn draw_pools(frame: &mut Frame, area: Rect, app: &App) {
         )));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+    for index in start..end {
+        app.register_hit(
+            Rect::new(
+                inner.x,
+                inner.y + (index - start) as u16 * 2,
+                inner.width,
+                2,
+            ),
+            MouseAction::UpstreamRow(index),
+        );
+    }
 }
 
 fn draw_backends(frame: &mut Frame, area: Rect, app: &App) {
@@ -177,6 +188,17 @@ fn draw_backends(frame: &mut Frame, area: Rect, app: &App) {
         )
         .column_spacing(1);
     frame.render_widget(table, rows_area);
+    for index in start..end {
+        app.register_hit(
+            Rect::new(
+                rows_area.x,
+                rows_area.y + 1 + (index - start) as u16,
+                rows_area.width,
+                1,
+            ),
+            MouseAction::BackendRow(index),
+        );
+    }
 
     let info = selected_backend_info(app, upstream, selected);
     frame.render_widget(

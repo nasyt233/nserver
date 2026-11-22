@@ -1,4 +1,4 @@
-  ◆ NSERVER  v0.3.0   NGINX ON    DOCKER OFF    FTP OFF                               localhost  ·  load —  ·  08:28:21 
+  ◆ NSERVER  v1.0.0   NGINX ON    DOCKER OFF    FTP OFF                               localhost  ·  load —  ·  14:17:36 
  ◈ 站点   Nginx 站点与反向代理                                                               Ctrl+B 侧栏  ·  Tab 页面   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ╭ 导航 ────────────╮╭ 站点  3/3 ─────────────────────────────────╮╭ demo.conf · 已启用 ────────────────────────────────╮
@@ -11,10 +11,10 @@
 │ 7  ⛨ SSL         ││                                            ││m 设置 · w 网站目录 · e 完整配置                    │
 │ 8  ⇅ FTP         ││                                            ││                                                    │
 │ 9  ⚙ 设置        ││                                            ││[1] demo.local  www.demo.local  L1                  │
-│ ·  ⚒ 配置        ││                                            ││    18080  ·  TLS 否  ·  2 location                 │
-│ ·  ⇉ 上游        ││                                            ││    root /tmp/nserver-shots/www                     │
-│                  ││                                            ││    → http://app_backend                            │
-│                  ││                                            ││                                                    │
+│ ·  ✦ 应用商店    ││                                            ││    18080  ·  TLS 否  ·  2 location                 │
+│ ·  ♲ 垃圾清理    ││                                            ││    root /tmp/nserver-shots/www                     │
+│ ·  ⚒ 配置        ││                                            ││    → http://app_backend                            │
+│ ·  ⇉ 上游        ││                                            ││                                                    │
 │                  ││                                            ││                                                    │
 │                  ││                                            ││                                                    │
 │                  ││                                            ││                                                    │

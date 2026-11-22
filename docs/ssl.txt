@@ -1,4 +1,4 @@
-  ◆ NSERVER  v0.3.0   NGINX ON    DOCKER OFF    FTP OFF                               localhost  ·  load —  ·  08:28:25 
+  ◆ NSERVER  v1.0.0   NGINX ON    DOCKER OFF    FTP OFF                               localhost  ·  load —  ·  14:17:40 
  ⛨ SSL   证书到期与自签名证书                                                                Ctrl+B 侧栏  ·  Tab 页面   
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 ╭ 导航 ────────────╮╭ SSL 证书  1 张 ──────────────────────────────────────────────────────────────────────────────────╮
@@ -11,10 +11,10 @@
 │ 7  ⛨ SSL         ││域名  secure.demo.local                                                                           │
 │ 8  ⇅ FTP         ││状态  即将到期 · 30 天                                                                            │
 │ 9  ⚙ 设置        ││颁发  CN = demo.local                                                                             │
-│ ·  ⚒ 配置        ││文件  /tmp/nserver-shots/certs/demo.pem                                                           │
-│ ·  ⇉ 上游        ││SAN   demo.local, www.demo.local                                                                  │
-│                  ││                                                                                                  │
-│                  ││n 生成自签名证书 · Enter 查看完整详情                                                             │
+│ ·  ✦ 应用商店    ││文件  /tmp/nserver-shots/certs/demo.pem                                                           │
+│ ·  ♲ 垃圾清理    ││SAN   demo.local, www.demo.local                                                                  │
+│ ·  ⚒ 配置        ││                                                                                                  │
+│ ·  ⇉ 上游        ││n 生成自签名证书 · Enter 查看完整详情                                                             │
 │                  ││                                                                                                  │
 │                  ││                                                                                                  │
 │                  ││                                                                                                  │

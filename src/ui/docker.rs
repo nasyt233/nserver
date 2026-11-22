@@ -4,7 +4,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Cell, Paragraph, Row, Table, Wrap};
 
-use crate::app::App;
+use crate::app::{App, MouseAction};
 use crate::docker::DockerView;
 use crate::ui::widgets::{panel, truncate};
 
@@ -154,6 +154,12 @@ fn draw_containers(frame: &mut Frame, area: Rect, app: &App) {
         )
         .column_spacing(1);
     frame.render_widget(table, area);
+    for index in start..end {
+        app.register_hit(
+            Rect::new(area.x, area.y + 1 + (index - start) as u16, area.width, 1),
+            MouseAction::DockerRow(index),
+        );
+    }
 }
 
 fn draw_images(frame: &mut Frame, area: Rect, app: &App) {
@@ -213,6 +219,12 @@ fn draw_images(frame: &mut Frame, area: Rect, app: &App) {
         )
         .column_spacing(1);
     frame.render_widget(table, area);
+    for index in start..end {
+        app.register_hit(
+            Rect::new(area.x, area.y + 1 + (index - start) as u16, area.width, 1),
+            MouseAction::DockerRow(index),
+        );
+    }
 }
 
 fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
