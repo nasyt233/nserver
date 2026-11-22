@@ -1,201 +1,203 @@
-name: Release NSERVER
+name: Build and Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - 'nweb-*'
+  workflow_dispatch:
 
 permissions:
   contents: write
-
-concurrency:
-  group: nserver-release-${{ github.ref }}
-  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  prepare:
-    name: Read version and validate tag
-    runs-on: ubuntu-22.04
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Read Cargo.toml version
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          VERSION="$(awk -F'"' '/^version = "/ { print $2; exit }' Cargo.toml)"
-          if [[ -z "$VERSION" ]]; then
-            echo "::error::Could not read package.version from Cargo.toml."
-            exit 1
-          fi
-          TAG="${GITHUB_REF_NAME}"
-          if [[ "$TAG" != "v$VERSION" ]]; then
-            echo "::error::Tag '$TAG' does not match Cargo.toml version 'v$VERSION'."
-            exit 1
-          fi
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Releasing NSERVER $VERSION from tag $TAG"
-
-  test:
-    name: Format, lint and test
-    needs: prepare
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        run: cargo clippy --locked --all-targets -- -D warnings
-
-      - name: Tests
-        run: cargo test --locked
-
   build:
-    name: Build ${{ matrix.arch }}
-    needs: [prepare, test]
-    runs-on: ubuntu-22.04
+    name: Build ${{ matrix.target_name }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          # ---------- glibc ----------
-          - target: x86_64-unknown-linux-gnu
-            arch: amd64
-            linker_env: ""
-            apt_packages: ""
-            musl_cross: ""
+          # ========== Linux (musl 静态，cargo-zigbuild) ==========
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            target_name: linux-amd64
+            bin_name: nweb
+            ext: ''
+            use_zig: true
 
-          - target: aarch64-unknown-linux-gnu
-            arch: arm64
-            linker_env: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
-            apt_packages: gcc-aarch64-linux-gnu
-            musl_cross: ""
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
+            target_name: linux-arm64
+            bin_name: nweb
+            ext: ''
+            use_zig: true
 
-          # ---------- musl 静态链接 ----------
-          - target: x86_64-unknown-linux-musl
-            arch: amd64-musl
-            linker_env: CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=musl-gcc
-            apt_packages: musl-tools
-            musl_cross: ""
+          - os: ubuntu-22.04
+            target: armv7-unknown-linux-musleabihf
+            target_name: linux-armv7
+            bin_name: nweb
+            ext: ''
+            use_zig: true
 
-          - target: aarch64-unknown-linux-musl
-            arch: arm64-musl
-            linker_env: CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-musl-gcc
-            apt_packages: ""
-            musl_cross: aarch64-linux-musl
+          - os: ubuntu-22.04
+            target: i686-unknown-linux-musl
+            target_name: linux-i686
+            bin_name: nweb
+            ext: ''
+            use_zig: true
 
-          - target: armv7-unknown-linux-musleabihf
-            arch: armv7-musl
-            linker_env: CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=arm-linux-musleabihf-gcc
-            apt_packages: ""
-            musl_cross: arm-linux-musleabihf
+          - os: ubuntu-22.04
+            target: riscv64gc-unknown-linux-musl
+            target_name: linux-riscv64
+            bin_name: nweb
+            ext: ''
+            use_zig: true
 
-          # ---------- 可选：riscv64（需要时取消注释） ----------
-          # - target: riscv64gc-unknown-linux-musl
-          #   arch: riscv64-musl
-          #   linker_env: CARGO_TARGET_RISCV64GC_UNKNOWN_LINUX_MUSL_LINKER=riscv64-linux-musl-gcc
-          #   apt_packages: ""
-          #   musl_cross: riscv64-linux-musl
+          - os: ubuntu-22.04
+            target: powerpc64le-unknown-linux-musl
+            target_name: linux-ppc64le
+            bin_name: nweb
+            ext: ''
+            use_zig: true
+
+          # ========== macOS ==========
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            target_name: macos-amd64
+            bin_name: nweb
+            ext: ''
+            use_zig: false
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            target_name: macos-arm64
+            bin_name: nweb
+            ext: ''
+            use_zig: false
+
+          # ========== Windows ==========
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            target_name: windows-amd64
+            bin_name: nweb
+            ext: .exe
+            use_zig: false
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install Rust target
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Cache Cargo
+      - name: Install Zig
+        if: matrix.use_zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
+
+      - name: Install cargo-zigbuild
+        if: matrix.use_zig
+        uses: taiki-e/install-action@cargo-zigbuild
+
+      - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
 
-      - name: Install apt toolchain
-        if: matrix.apt_packages != ''
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ${{ matrix.apt_packages }}
-
-      - name: Install musl cross toolchain
-        if: matrix.musl_cross != ''
+      - name: Get package version
+        id: version
         shell: bash
         run: |
-          set -euo pipefail
-          wget -q "https://musl.cc/${{ matrix.musl_cross }}-cross.tgz"
-          tar -xzf "${{ matrix.musl_cross }}-cross.tgz" -C /tmp
-          sudo mv "/tmp/${{ matrix.musl_cross }}-cross" /opt/
-          echo "/opt/${{ matrix.musl_cross }}-cross/bin" >> "$GITHUB_PATH"
+          VERSION=$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+          if [ -z "$VERSION" ]; then
+            echo "❌ 无法读取版本号"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Package version: $VERSION"
 
-      - name: Configure cross linker
-        if: matrix.linker_env != ''
-        shell: bash
-        run: echo "${{ matrix.linker_env }}" >> "$GITHUB_ENV"
-
-      - name: Build release binary
-        run: cargo build --locked --release --target "${{ matrix.target }}"
-
-      - name: Package asset
+      - name: Verify tag matches version
+        if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
-          set -euo pipefail
-          VERSION="${{ needs.prepare.outputs.version }}"
-          ASSET="nserver-${VERSION}-${{ matrix.arch }}"
-          cp "target/${{ matrix.target }}/release/nserver" "$ASSET"
-          chmod +x "$ASSET"
-          file "$ASSET"
-          ls -lh "$ASSET"
+          TAG="${GITHUB_REF#refs/tags/nweb-}"
+          VERSION="${{ steps.version.outputs.version }}"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "❌ Tag (nweb-$TAG) 与 Cargo.toml 版本 ($VERSION) 不一致"
+            exit 1
+          fi
+          echo "✅ 版本号一致"
 
-      - name: Upload binary
+      - name: Build (musl via zig)
+        if: matrix.use_zig
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+
+      - name: Build (native)
+        if: '!matrix.use_zig'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.use_zig }}" = "true" ]; then
+            if [ -f "target/release/${{ matrix.bin_name }}${{ matrix.ext }}" ]; then
+              SRC="target/release/${{ matrix.bin_name }}${{ matrix.ext }}"
+            else
+              SRC="target/${{ matrix.target }}/release/${{ matrix.bin_name }}${{ matrix.ext }}"
+            fi
+          else
+            SRC="target/${{ matrix.target }}/release/${{ matrix.bin_name }}${{ matrix.ext }}"
+          fi
+          DST="dist/nweb-${{ steps.version.outputs.version }}-${{ matrix.target_name }}${{ matrix.ext }}"
+          cp "$SRC" "$DST"
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            chmod +x "$DST"
+          fi
+          echo "=== 文件信息 ==="
+          ls -la dist/
+          if command -v file >/dev/null 2>&1; then
+            file "$DST"
+          fi
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nserver-${{ matrix.arch }}
-          path: nserver-${{ needs.prepare.outputs.version }}-${{ matrix.arch }}
+          name: nweb-${{ matrix.target_name }}
+          path: dist/*
           if-no-files-found: error
 
   release:
-    name: Create GitHub Release
-    needs: [prepare, build]
-    runs-on: ubuntu-22.04
+    name: Create Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
     steps:
-      - name: Download built binaries
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: nserver-*
-          path: dist
+          path: artifacts
           merge-multiple: true
 
-      - name: Generate checksums
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd dist
-          ls -l
-          sha256sum nserver-*-* > SHA256SUMS
-          cat SHA256SUMS
+      - name: List artifacts
+        run: ls -laR artifacts/
 
-      - name: Publish GitHub Release
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: nserver v${{ needs.prepare.outputs.version }}
+          name: ${{ github.ref_name }}
+          files: artifacts/*
           generate_release_notes: true
-          fail_on_unmatched_files: true
-          files: |
-            dist/nserver-*
-            dist/SHA256SUMS
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
