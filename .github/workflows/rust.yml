@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'nweb-*'
+      - 'nserver-*'
   workflow_dispatch:
 
 permissions:
@@ -24,42 +24,42 @@ jobs:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-musl
             target_name: linux-amd64
-            bin_name: nweb
+            bin_name: nserver
             ext: ''
             use_zig: true
 
           - os: ubuntu-22.04
             target: aarch64-unknown-linux-musl
             target_name: linux-arm64
-            bin_name: nweb
+            bin_name: nserver
             ext: ''
             use_zig: true
 
           - os: ubuntu-22.04
             target: armv7-unknown-linux-musleabihf
             target_name: linux-armv7
-            bin_name: nweb
+            bin_name: nserver
             ext: ''
             use_zig: true
 
           - os: ubuntu-22.04
             target: i686-unknown-linux-musl
             target_name: linux-i686
-            bin_name: nweb
+            bin_name: nserver
             ext: ''
             use_zig: true
 
           - os: ubuntu-22.04
             target: riscv64gc-unknown-linux-musl
             target_name: linux-riscv64
-            bin_name: nweb
+            bin_name: nserver
             ext: ''
             use_zig: true
 
           - os: ubuntu-22.04
             target: powerpc64le-unknown-linux-musl
             target_name: linux-ppc64le
-            bin_name: nweb
+            bin_name: nserver
             ext: ''
             use_zig: true
 
@@ -67,14 +67,14 @@ jobs:
           - os: macos-latest
             target: x86_64-apple-darwin
             target_name: macos-amd64
-            bin_name: nweb
+            bin_name: nserver
             ext: ''
             use_zig: false
 
           - os: macos-latest
             target: aarch64-apple-darwin
             target_name: macos-arm64
-            bin_name: nweb
+            bin_name: nserver
             ext: ''
             use_zig: false
 
@@ -82,7 +82,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             target_name: windows-amd64
-            bin_name: nweb
+            bin_name: nserver
             ext: .exe
             use_zig: false
 
@@ -126,10 +126,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         shell: bash
         run: |
-          TAG="${GITHUB_REF#refs/tags/nweb-}"
+          TAG="${GITHUB_REF#refs/tags/nserver-}"
           VERSION="${{ steps.version.outputs.version }}"
           if [ "$TAG" != "$VERSION" ]; then
-            echo "❌ Tag (nweb-$TAG) 与 Cargo.toml 版本 ($VERSION) 不一致"
+            echo "❌ Tag (nserver-$TAG) 与 Cargo.toml 版本 ($VERSION) 不一致"
             exit 1
           fi
           echo "✅ 版本号一致"
@@ -155,7 +155,7 @@ jobs:
           else
             SRC="target/${{ matrix.target }}/release/${{ matrix.bin_name }}${{ matrix.ext }}"
           fi
-          DST="dist/nweb-${{ steps.version.outputs.version }}-${{ matrix.target_name }}${{ matrix.ext }}"
+          DST="dist/nserver-${{ steps.version.outputs.version }}-${{ matrix.target_name }}${{ matrix.ext }}"
           cp "$SRC" "$DST"
           if [ "${{ runner.os }}" != "Windows" ]; then
             chmod +x "$DST"
@@ -169,7 +169,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nweb-${{ matrix.target_name }}
+          name: nserver-${{ matrix.target_name }}
           path: dist/*
           if-no-files-found: error
 
