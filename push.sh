@@ -11,8 +11,8 @@ echo "正在更新lock"
 # 更新 lockfile
 cargo generate-lockfile >/dev/null 2>&1 || cargo check >/dev/null 2>&1
 
-# 删除旧tag
-git tag -d "v$VERSION"
+echo "正在删除旧tag"
+git tag -d "v$VERSION" &
 git push origin --delete "v$VERSION"
 
 # 提交仓库
