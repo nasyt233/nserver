@@ -79,12 +79,12 @@ jobs:
             use_zig: false
 
           # ========== Windows ==========
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            target_name: windows-amd64
-            bin_name: nserver
-            ext: .exe
-            use_zig: false
+          # - os: windows-latest
+            # target: x86_64-pc-windows-msvc
+            # target_name: windows-amd64
+            # bin_name: nserver
+            # ext: .exe
+            # use_zig: false
 
     steps:
       - name: Checkout
