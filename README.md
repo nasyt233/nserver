@@ -61,6 +61,24 @@
 
 ## 安装与运行
 
+### 一键安装预编译版本
+
+支持 GitCode 优先、GitHub 备用；安装器根据系统和 CPU 架构选择对应 Release 资产：
+
+```bash
+curl -fsSL https://gitcode.com/nasyt/nserver/raw/main/scripts/install.sh | sh
+```
+
+也可以从 GitHub 获取脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nasyt233/nserver/main/scripts/install.sh | sh
+```
+
+默认安装到 `/usr/local/bin`；没有写权限时使用 `sudo`，无 `sudo` 时安装到 `~/.local/bin`。Termux 环境使用 `$PREFIX/bin`。支持 Linux amd64/arm64/armv7/i686/riscv64/ppc64le，以及 macOS amd64/arm64。Windows shell 可识别，但当前 Release 工作流未构建 Windows 资产。
+
+### 从源码构建
+
 要求：Linux、Nginx、Rust **1.98+**（最新 stable 验证过）。Docker、vsftpd、openssl 都是可选的，对应页面会显示缺失提示。
 
 ```bash
@@ -127,17 +145,21 @@ nserver --read-only --theme forest
 
 ```bash
 # Cargo.toml 当前版本必须是 1.0.0
-git tag v1.0.0
-git push origin v1.0.0
+git tag nserver-1.0.0
+git push origin nserver-1.0.0
 ```
 
-流程会先校验 tag `vX.Y.Z` 与 `Cargo.toml` 的版本一致，然后运行 fmt / clippy / tests，交叉编译 Linux `amd64` 和 `arm64`，最后创建 GitHub Release，资产命名：
+流程会校验 tag `nserver-X.Y.Z` 与 `Cargo.toml` 的版本一致，然后构建 Linux musl 和 macOS 多架构资产，最后创建 Release。资产命名：
 
 ```text
-nserver-1.0.0-amd64
-nserver-1.0.0-arm64
+nserver-1.0.0-linux-amd64
+nserver-1.0.0-linux-arm64
+nserver-1.0.0-macos-amd64
+nserver-1.0.0-macos-arm64
 SHA256SUMS
 ```
+
+安装脚本：[scripts/install.sh](scripts/install.sh)，会优先从 GitCode `nasyt/nserver` 下载，失败后切换到 GitHub `nasyt233/nserver`。
 
 如果 tag 和 Cargo.toml 版本不一致，工作流会直接失败，避免发错版本。
 
