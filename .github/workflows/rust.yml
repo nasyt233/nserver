@@ -1,0 +1,177 @@
+name: 构建与发布
+
+on:
+  push:
+    tags:
+      - 'nserver-*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: 构建 ${{ matrix.target_name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ---------- Linux (musl 静态) ----------
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            target_name: linux-amd64
+            bin_name: nserver
+            ext: ''
+            use_zig: true
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
+            target_name: linux-arm64
+            bin_name: nserver
+            ext: ''
+            use_zig: true
+
+          # ---------- Windows ----------
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            target_name: win-amd64
+            bin_name: nserver.exe
+            ext: '.exe'
+            use_zig: false
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            target_name: win-arm64
+            bin_name: nserver.exe
+            ext: '.exe'
+            use_zig: false
+
+          # ---------- macOS ----------
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            target_name: macos-amd64
+            bin_name: nserver
+            ext: ''
+            use_zig: false
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            target_name: macos-arm64
+            bin_name: nserver
+            ext: ''
+            use_zig: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: 安装 Zig
+        if: matrix.use_zig
+        uses: mlugg/setup-zig@v2
+
+      - name: 安装 cargo-zigbuild
+        if: matrix.use_zig
+        run: cargo install cargo-zigbuild --locked
+
+      - name: 缓存 cargo 构建
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: 获取软件包版本
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(awk -F'"' '/^version[[:space:]]*=/{print $2; exit}' Cargo.toml)
+          if [ -z "$VERSION" ]; then
+            echo "❌ 无法读取版本号"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Package version: $VERSION"
+
+      - name: 验证标签是否匹配版本
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF#refs/tags/nserver-}"
+          VERSION="${{ steps.version.outputs.version }}"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "❌ Tag (nserver-$TAG) 与 Cargo.toml 版本 ($VERSION) 不一致"
+            exit 1
+          fi
+          echo "✅ 版本号一致"
+
+      - name: 构建（通过 zig 构建 musl）
+        if: matrix.use_zig
+        run: cargo zigbuild --release --target ${{ matrix.target }}
+
+      - name: 构建（原生）
+        if: '!matrix.use_zig'
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: 二进制包
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.use_zig }}" = "true" ]; then
+            if [ -f "target/release/${{ matrix.bin_name }}" ]; then
+              SRC="target/release/${{ matrix.bin_name }}"
+            else
+              SRC="target/${{ matrix.target }}/release/${{ matrix.bin_name }}"
+            fi
+          else
+            SRC="target/${{ matrix.target }}/release/${{ matrix.bin_name }}"
+          fi
+          DST="dist/nserver-${{ steps.version.outputs.version }}-${{ matrix.target_name }}${{ matrix.ext }}"
+          cp "$SRC" "$DST"
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            chmod +x "$DST"
+          fi
+          echo "=== 文件信息 ==="
+          ls -la dist/
+          if command -v file >/dev/null 2>&1; then
+            file "$DST"
+          fi
+
+      - name: 上传构建文件
+        uses: actions/upload-artifact@v4
+        with:
+          name: nserver-${{ matrix.target_name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: 创建版本
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: 工程文件
+        uses: actions/checkout@v4
+
+      - name: 下载所有工程文件
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出工程文件
+        run: ls -laR artifacts/
+
+      - name: 创建 GitHub 版本
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          files: artifacts/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

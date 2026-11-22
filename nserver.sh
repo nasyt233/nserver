@@ -3,7 +3,7 @@
 
 
 nasyt_dir="$HOME/.nserver"
-version="0.8"
+version="0.7"
 time_date="2026/8/12"
 
 source $nasyt_dir/config.txt
