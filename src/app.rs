@@ -242,6 +242,53 @@ pub struct InputState {
     pub value: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ServiceWizard {
+    pub spec: crate::service::ServiceSpec,
+    pub focus: usize,
+    pub error: Option<String>,
+}
+
+impl ServiceWizard {
+    pub fn new() -> Self {
+        Self {
+            spec: crate::service::ServiceSpec {
+                name: String::new(),
+                description: String::new(),
+                exec_start: String::new(),
+                working_directory: String::new(),
+                user: String::new(),
+                environment: String::new(),
+            },
+            focus: 0,
+            error: None,
+        }
+    }
+    pub fn fields() -> [&'static str; 6] {
+        [
+            "服务名",
+            "描述",
+            "启动命令",
+            "工作目录",
+            "运行用户",
+            "环境变量",
+        ]
+    }
+    fn current_mut(&mut self) -> &mut String {
+        match self.focus {
+            0 => &mut self.spec.name,
+            1 => &mut self.spec.description,
+            2 => &mut self.spec.exec_start,
+            3 => &mut self.spec.working_directory,
+            4 => &mut self.spec.user,
+            _ => &mut self.spec.environment,
+        }
+    }
+    fn move_focus(&mut self, delta: isize) {
+        self.focus = ((self.focus as isize + delta).rem_euclid(6)) as usize;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfirmAction {
     Service(Action),
@@ -249,6 +296,7 @@ pub enum ConfirmAction {
         unit: String,
         action: crate::service::UnitAction,
     },
+    CreateUnit(crate::service::ServiceSpec),
     ToggleSite {
         enable: bool,
     },
@@ -744,6 +792,7 @@ pub enum Overlay {
     NewSite(NewSiteState),
     SiteSettings(SiteSettingsState),
     Picker(PickerState),
+    ServiceWizard(ServiceWizard),
 }
 
 pub struct LogState {
@@ -2658,6 +2707,15 @@ impl App {
             KeyCode::Char('r') => self.request_unit_action(crate::service::UnitAction::Restart),
             KeyCode::Char('e') => self.request_unit_action(crate::service::UnitAction::Enable),
             KeyCode::Char('d') => self.request_unit_action(crate::service::UnitAction::Disable),
+            KeyCode::Char('n') => {
+                if self.read_only {
+                    self.toast(ToastKind::Warning, "只读模式：不能创建服务");
+                } else if !self.root {
+                    self.toast(ToastKind::Warning, "创建系统服务需要 root 权限");
+                } else {
+                    self.overlay = Overlay::ServiceWizard(ServiceWizard::new());
+                }
+            }
             _ => {}
         }
     }
@@ -3071,6 +3129,49 @@ impl App {
                 }
                 _ => self.overlay = Overlay::Input(input),
             },
+            Overlay::ServiceWizard(mut wizard) => match key.code {
+                KeyCode::Esc => {}
+                KeyCode::Tab | KeyCode::Down => {
+                    wizard.move_focus(1);
+                    self.overlay = Overlay::ServiceWizard(wizard);
+                }
+                KeyCode::BackTab | KeyCode::Up => {
+                    wizard.move_focus(-1);
+                    self.overlay = Overlay::ServiceWizard(wizard);
+                }
+                KeyCode::Enter => {
+                    if wizard.focus + 1 < ServiceWizard::fields().len() {
+                        wizard.move_focus(1);
+                        self.overlay = Overlay::ServiceWizard(wizard);
+                    } else if let Err(err) = wizard.spec.validate() {
+                        wizard.error = Some(err);
+                        self.overlay = Overlay::ServiceWizard(wizard);
+                    } else {
+                        self.overlay = Overlay::Confirm(ConfirmState {
+                            title: format!("创建 {}？", wizard.spec.unit_name()),
+                            message: vec![
+                                "将写入 /etc/systemd/system 并执行 daemon-reload。".into(),
+                                format!("ExecStart={}", wizard.spec.exec_start),
+                            ],
+                            action: ConfirmAction::CreateUnit(wizard.spec),
+                            danger: false,
+                        });
+                    }
+                }
+                KeyCode::Backspace => {
+                    wizard.current_mut().pop();
+                    self.overlay = Overlay::ServiceWizard(wizard);
+                }
+                KeyCode::Char(c)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    wizard.current_mut().push(c);
+                    wizard.error = None;
+                    self.overlay = Overlay::ServiceWizard(wizard);
+                }
+                _ => self.overlay = Overlay::ServiceWizard(wizard),
+            },
             Overlay::Picker(mut picker) => match key.code {
                 KeyCode::Esc => {
                     self.overlay = picker.restore_overlay();
@@ -3430,6 +3531,19 @@ impl App {
                     );
                 } else {
                     self.toast(ToastKind::Danger, result.summary());
+                }
+            }
+            ConfirmAction::CreateUnit(spec) => {
+                let result = service::create_unit(&spec);
+                self.service_units = service::unit_statuses();
+                self.overlay = Overlay::Output(OutputState::from_results(
+                    "创建服务",
+                    std::slice::from_ref(&result),
+                ));
+                if result.success {
+                    self.toast(ToastKind::Success, format!("{} 已创建", spec.unit_name()));
+                } else {
+                    self.toast(ToastKind::Danger, result.output());
                 }
             }
             ConfirmAction::ToggleSite { enable } => self.perform_site_toggle(enable),

@@ -12,6 +12,9 @@ use crate::app::{
 use crate::ui::widgets::{
     center, center_percent, clear_popup, key_span, panel, panel_focused, truncate,
 };
+#[path = "service_wizard.rs"]
+mod service_wizard;
+use service_wizard::draw_service_wizard;
 
 pub fn draw_toast(frame: &mut Frame, area: Rect, app: &App) {
     let Some(toast) = &app.toast else {
@@ -72,6 +75,7 @@ pub fn draw_overlay(frame: &mut Frame, area: Rect, app: &App) {
         Overlay::NewSite(form) => draw_new_site(frame, area, app, form),
         Overlay::SiteSettings(state) => draw_site_settings(frame, area, app, state),
         Overlay::Picker(picker) => draw_picker(frame, area, app, picker),
+        Overlay::ServiceWizard(wizard) => draw_service_wizard(frame, area, app, wizard),
     }
 }
 

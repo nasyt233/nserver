@@ -77,7 +77,7 @@ fn draw_help(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(block, area);
     let lines = vec![
         Line::from(Span::styled(
-            "s 启动   x 停止   r 重启   e 开机启动   d 取消开机启动   u 刷新",
+            "s 启动   x 停止   r 重启   e 开机启动   d 取消开机启动   n 创建   u 刷新",
             Style::default().fg(theme.muted),
         )),
         Line::from(Span::styled(

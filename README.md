@@ -113,7 +113,7 @@ nserver --read-only --theme forest
 
 首次启动不会自动写入用户目录。可以复制 [`config.example.toml`](config.example.toml) 到 `~/.nserver/config.toml`，或进入「设置」按 `w` 创建/保存。显式的 `--config`、`--theme`、`--read-only` 参数优先于用户配置。
 
-「系统服务」页面只允许操作内置白名单中的 systemd unit（如 `nginx`、`docker`、`ssh`、`vsftpd`、`redis-server` 等），并且 systemd 未运行时不会执行服务命令。
+「系统服务」页面会发现并列出 systemd 的全部 `.service` unit，支持启动、停止、重启、开机启用/禁用；按 `n` 可打开创建向导，填写服务名、描述、ExecStart、工作目录、用户和环境变量，确认后写入 `/etc/systemd/system` 并执行 `daemon-reload`。所有写操作都需要确认，且 systemd 未运行时不会执行服务命令。
 
 ### 一键演示
 

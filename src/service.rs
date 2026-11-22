@@ -45,8 +45,8 @@ impl UnitAction {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnitStatus {
-    pub name: &'static str,
-    pub description: &'static str,
+    pub name: String,
+    pub description: String,
     pub active: String,
     pub enabled: String,
 }
@@ -186,29 +186,157 @@ fn systemctl_path() -> Option<PathBuf> {
 }
 
 pub fn unit_statuses() -> Vec<UnitStatus> {
-    let available = Path::new("/run/systemd/system").is_dir() && systemctl_path().is_some();
+    let Some(systemctl) = systemctl_path() else {
+        return fallback_units("systemctl 不可用");
+    };
+    if !Path::new("/run/systemd/system").is_dir() {
+        return fallback_units("systemd 不可用");
+    }
+    let output = Command::new(systemctl)
+        .args([
+            "list-unit-files",
+            "--type=service",
+            "--all",
+            "--no-legend",
+            "--no-pager",
+        ])
+        .output();
+    let Ok(output) = output else {
+        return fallback_units("读取失败");
+    };
+    let mut units = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut parts = line.split_whitespace();
+        let Some(raw_name) = parts.next() else {
+            continue;
+        };
+        if !raw_name.ends_with(".service") {
+            continue;
+        }
+        let name = raw_name.trim_end_matches(".service").to_string();
+        let enabled = parts.next().unwrap_or("unknown").to_string();
+        units.push(UnitStatus {
+            description: unit_description(&name),
+            active: unit_query(&name, "is-active"),
+            enabled,
+            name,
+        });
+    }
+    units.sort_by(|a, b| a.name.cmp(&b.name));
+    units.dedup_by(|a, b| a.name == b.name);
+    units
+}
+
+fn fallback_units(state: &str) -> Vec<UnitStatus> {
     MANAGED_UNITS
         .iter()
         .map(|(name, description)| UnitStatus {
-            name,
-            description,
-            active: if available {
-                unit_query(name, "is-active")
-            } else {
-                "systemd 不可用".into()
-            },
-            enabled: if available {
-                unit_query(name, "is-enabled")
-            } else {
-                "—".into()
-            },
+            name: (*name).to_string(),
+            description: (*description).to_string(),
+            active: state.to_string(),
+            enabled: "—".into(),
         })
         .collect()
 }
 
+fn unit_description(unit: &str) -> String {
+    let Some(systemctl) = systemctl_path() else {
+        return String::new();
+    };
+    Command::new(systemctl)
+        .args(["show", "--property=Description", "--value", unit])
+        .output()
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default()
+}
+
+fn valid_unit_name(unit: &str) -> bool {
+    !unit.is_empty()
+        && unit.len() <= 128
+        && unit
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '@'))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceSpec {
+    pub name: String,
+    pub description: String,
+    pub exec_start: String,
+    pub working_directory: String,
+    pub user: String,
+    pub environment: String,
+}
+
+impl ServiceSpec {
+    pub fn unit_name(&self) -> String {
+        format!("{}.service", self.name.trim())
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if !valid_unit_name(&self.name) || self.name.ends_with(".service") {
+            return Err("服务名称只能包含字母、数字、-、_、.、@，且不要填写 .service。".into());
+        }
+        if self.exec_start.trim().is_empty() {
+            return Err("ExecStart 不能为空。".into());
+        }
+        if self.exec_start.contains('\n') || self.environment.contains('\n') {
+            return Err("命令和环境变量不能包含换行。".into());
+        }
+        Ok(())
+    }
+
+    pub fn render(&self) -> String {
+        let mut text = format!(
+            "[Unit]\nDescription={}\nAfter=network.target\n\n[Service]\nType=simple\nExecStart={}\n",
+            self.description.trim(),
+            self.exec_start.trim()
+        );
+        if !self.working_directory.trim().is_empty() {
+            text.push_str(&format!(
+                "WorkingDirectory={}\n",
+                self.working_directory.trim()
+            ));
+        }
+        if !self.user.trim().is_empty() {
+            text.push_str(&format!("User={}\n", self.user.trim()));
+        }
+        if !self.environment.trim().is_empty() {
+            text.push_str(&format!("Environment={}\n", self.environment.trim()));
+        }
+        text.push_str("Restart=on-failure\n\n[Install]\nWantedBy=multi-user.target\n");
+        text
+    }
+}
+
+pub fn create_unit(spec: &ServiceSpec) -> CommandResult {
+    if let Err(err) = spec.validate() {
+        return CommandResult::error("创建服务", err);
+    }
+    if !is_root() {
+        return CommandResult::error("创建服务", "创建 systemd 服务需要 root 权限。");
+    }
+    let path = Path::new("/etc/systemd/system").join(spec.unit_name());
+    if path.exists() {
+        return CommandResult::error("创建服务", format!("服务已存在：{}", path.display()));
+    }
+    if let Err(err) =
+        fs::create_dir_all("/etc/systemd/system").and_then(|_| fs::write(&path, spec.render()))
+    {
+        return CommandResult::error("创建服务", format!("写入 unit 文件失败：{err}"));
+    }
+    let Some(systemctl) = systemctl_path() else {
+        return CommandResult::error("创建服务", "没有找到 systemctl。");
+    };
+    let mut cmd = Command::new(systemctl);
+    cmd.arg("daemon-reload");
+    run(cmd, "创建服务")
+}
+
 pub fn unit_action(unit: &str, action: UnitAction) -> CommandResult {
-    if !MANAGED_UNITS.iter().any(|(name, _)| *name == unit) {
-        return CommandResult::error("服务操作", "不允许操作未列入管理清单的服务。");
+    if !valid_unit_name(unit) {
+        return CommandResult::error("服务操作", "服务名称格式无效。");
     }
     if !Path::new("/run/systemd/system").is_dir() {
         return CommandResult::error(action.label(), "当前系统未运行 systemd。");
