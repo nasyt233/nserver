@@ -66,7 +66,7 @@
 支持 GitCode 优先、GitHub 备用；安装器根据系统和 CPU 架构选择对应 Release 资产：
 
 ```bash
-curl -fsSL https://gitcode.com/nasyt/nserver/raw/main/scripts/install.sh | sh
+curl -fsSL https://raw.gitcode.com/nasyt/nserver/raw/main/scripts/install.sh | sh
 ```
 
 也可以从 GitHub 获取脚本：
